@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+mod macos;
 mod highlighter;
 mod session;
 mod tab;
@@ -25,6 +27,7 @@ struct App {
 
 #[derive(Debug, Clone)]
 enum Message {
+    CheckExternalEvents,
     Edit(text_editor::Action),
     Indent,
     Unindent,
@@ -55,13 +58,22 @@ impl App {
         let args: Vec<String> = std::env::args().skip(1).collect();
         let mut initial_tabs = Vec::new();
 
-        // 1. Check if files were passed as command line arguments
+        // 1. Check if files were passed as command line arguments or via macOS open events
+        let mut initial_paths = Vec::new();
         for arg in &args {
             let path = PathBuf::from(arg);
             if path.exists() {
-                if let Ok(tab) = Tab::from_file(path) {
-                    initial_tabs.push(tab);
-                }
+                initial_paths.push(path);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            initial_paths.extend(macos::take_initial_files());
+        }
+
+        for path in initial_paths {
+            if let Ok(tab) = Tab::from_file(path) {
+                initial_tabs.push(tab);
             }
         }
 
@@ -109,6 +121,16 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::CheckExternalEvents => {
+                #[cfg(target_os = "macos")]
+                {
+                    while let Some(path) = macos::try_recv() {
+                        self.open_path(path);
+                    }
+                }
+                Task::none()
+            }
+
             Message::Edit(action) => {
                 if let Some(tab) = self.tabs.get_mut(self.active_tab) {
                     tab.on_edit(action);
@@ -709,11 +731,20 @@ impl App {
             _ => None,
         });
 
-        Subscription::batch(vec![window_sub, event_sub])
+        #[cfg(target_os = "macos")]
+        let external_sub = iced::time::every(std::time::Duration::from_millis(150))
+            .map(|_| Message::CheckExternalEvents);
+        #[cfg(not(target_os = "macos"))]
+        let external_sub = Subscription::none();
+
+        Subscription::batch(vec![window_sub, event_sub, external_sub])
     }
 }
 
 fn main() -> iced::Result {
+    #[cfg(target_os = "macos")]
+    macos::init();
+
     iced::application(App::new, App::update, App::view)
         .title(App::title)
         .subscription(App::subscription)

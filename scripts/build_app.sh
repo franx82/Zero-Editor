@@ -56,14 +56,53 @@ cat <<EOF > "$BUNDLE_DIR/Contents/Info.plist"
     <array>
         <dict>
             <key>CFBundleTypeName</key>
-            <string>Plain Text</string>
+            <string>Source Code and Scripts</string>
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
             <key>LSItemContentTypes</key>
             <array>
                 <string>public.plain-text</string>
                 <string>public.text</string>
                 <string>public.source-code</string>
+                <string>public.script</string>
+                <string>public.shell-script</string>
+                <string>public.bash-script</string>
+                <string>public.zsh-script</string>
+                <string>public.c-source</string>
+                <string>public.c-header</string>
+                <string>public.c-plus-plus-source</string>
+                <string>public.c-plus-plus-header</string>
+                <string>public.objective-c-source</string>
+                <string>public.python-script</string>
+                <string>public.perl-script</string>
+                <string>public.php-script</string>
+                <string>public.ruby-script</string>
+                <string>public.yaml</string>
+                <string>public.json</string>
+                <string>public.xml</string>
+                <string>public.html</string>
+                <string>public.css</string>
+                <string>public.data</string>
+                <string>public.content</string>
+                <string>public.item</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>All Files</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>*</string>
+            </array>
+            <key>CFBundleTypeOSTypes</key>
+            <array>
+                <string>****</string>
             </array>
         </dict>
     </array>
@@ -71,5 +110,21 @@ cat <<EOF > "$BUNDLE_DIR/Contents/Info.plist"
 </plist>
 EOF
 
+# Register with macOS LaunchServices
+if [ -f "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" ]; then
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$BUNDLE_DIR"
+fi
+
 echo "✓ $APP_NAME.app created successfully at: $BUNDLE_DIR"
-echo "You can move it to /Applications with: cp -r \"$BUNDLE_DIR\" /Applications/"
+
+if [ -d "/Applications/$APP_NAME.app" ]; then
+    echo "Updating existing installation in /Applications/$APP_NAME.app..."
+    rm -rf "/Applications/$APP_NAME.app"
+    cp -R "$BUNDLE_DIR" "/Applications/"
+    if [ -f "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" ]; then
+        /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "/Applications/$APP_NAME.app"
+    fi
+    echo "✓ /Applications/$APP_NAME.app updated successfully"
+else
+    echo "You can move it to /Applications with: cp -r \"$BUNDLE_DIR\" /Applications/"
+fi
