@@ -1,17 +1,19 @@
 #[cfg(target_os = "macos")]
 mod macos;
 mod highlighter;
+mod scrollbar;
 mod session;
 mod tab;
 mod theme;
 
 use std::path::PathBuf;
-use iced::widget::{button, column, container, row, scrollable, space, stack, text, text_editor, text_input};
+use iced::widget::{button, canvas, column, container, row, scrollable, space, stack, text, text_editor, text_input};
 use iced::{
     event, keyboard, window, Alignment, Element, Event, Font, Length, Padding,
     Size, Subscription, Task,
 };
 use iced::keyboard::Key;
+use scrollbar::Scrollbar;
 use tab::Tab;
 
 struct App {
@@ -28,6 +30,7 @@ struct App {
 #[derive(Debug, Clone)]
 enum Message {
     CheckExternalEvents,
+    ScrollToLine(usize),
     Edit(text_editor::Action),
     Indent,
     Unindent,
@@ -347,6 +350,13 @@ impl App {
                 Task::none()
             }
 
+            Message::ScrollToLine(line) => {
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    tab.scroll_to_line(line);
+                }
+                Task::none()
+            }
+
             Message::WindowCloseRequested(id) => {
                 session::save_session(&self.tabs, self.active_tab);
                 window::close(id)
@@ -530,6 +540,21 @@ impl App {
                 ..container::Style::default()
             });
 
+            let scrollbar_widget = canvas(Scrollbar::new(
+                tab.line_count(),
+                tab.scroll_line,
+                Message::ScrollToLine,
+            ))
+            .width(Length::Fixed(14.0))
+            .height(Length::Fill);
+
+            let editor_with_scroll = row![
+                editor_widget,
+                scrollbar_widget,
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill);
+
             if self.language_picker_open {
                 let filter = self.language_filter.to_lowercase();
                 let languages = highlighter::major_languages()
@@ -582,7 +607,7 @@ impl App {
                 .padding(12.0);
 
                 stack![
-                    editor_widget,
+                    editor_with_scroll,
                     container(picker_modal)
                         .width(Length::Fill)
                         .align_x(iced::alignment::Horizontal::Center)
@@ -590,7 +615,7 @@ impl App {
                 ]
                 .into()
             } else {
-                editor_widget.into()
+                editor_with_scroll.into()
             }
         } else {
             container(text("Nessun buffer aperto").color(theme::TEXT_MUTED))

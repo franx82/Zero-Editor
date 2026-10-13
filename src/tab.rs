@@ -137,6 +137,7 @@ pub struct Tab {
     pub saved_text: String,
     pub manual_syntax: Option<String>,
     pub encoding: FileEncoding,
+    pub scroll_line: usize,
 }
 
 impl Tab {
@@ -164,6 +165,7 @@ impl Tab {
             saved_text: String::new(),
             manual_syntax: None,
             encoding: FileEncoding::Utf8 { bom: false },
+            scroll_line: 0,
         }
     }
 
@@ -185,6 +187,7 @@ impl Tab {
             saved_text: text,
             manual_syntax: None,
             encoding,
+            scroll_line: 0,
         })
     }
 
@@ -223,6 +226,7 @@ impl Tab {
             saved_text,
             manual_syntax: None,
             encoding,
+            scroll_line: cursor_line.saturating_sub(15),
         }
     }
 
@@ -252,10 +256,27 @@ impl Tab {
         Ok(())
     }
 
+    pub fn scroll_to_line(&mut self, target_line: usize) {
+        let max_scroll = self.line_count().saturating_sub(1);
+        let target_line = target_line.min(max_scroll);
+        let diff = target_line as i32 - self.scroll_line as i32;
+        if diff != 0 {
+            self.content.perform(text_editor::Action::Scroll { lines: diff });
+            self.scroll_line = target_line;
+        }
+    }
+
     pub fn on_edit(&mut self, action: text_editor::Action) {
         match action {
             text_editor::Action::Edit(text_editor::Edit::Enter) => {
                 self.handle_enter();
+                self.sync_scroll_with_cursor();
+            }
+            text_editor::Action::Scroll { lines } => {
+                let max_scroll = self.line_count().saturating_sub(1);
+                self.scroll_line = (self.scroll_line as i32 + lines)
+                    .clamp(0, max_scroll as i32) as usize;
+                self.content.perform(action);
             }
             other => {
                 let is_edit = other.is_edit();
@@ -263,7 +284,18 @@ impl Tab {
                 if is_edit {
                     self.is_dirty = true;
                 }
+                self.sync_scroll_with_cursor();
             }
+        }
+    }
+
+    fn sync_scroll_with_cursor(&mut self) {
+        let (cursor_line, _) = self.cursor_position();
+        let visible_lines = 32;
+        if cursor_line < self.scroll_line {
+            self.scroll_line = cursor_line;
+        } else if cursor_line >= self.scroll_line + visible_lines {
+            self.scroll_line = cursor_line.saturating_sub(visible_lines - 1);
         }
     }
 
@@ -543,5 +575,35 @@ mod tests {
         assert_eq!(read_text, sample);
 
         let _ = fs::remove_file(test_file);
+    }
+
+    #[test]
+    fn test_scroll_to_line_and_wheel() {
+        let text = (0..100).map(|i| format!("Riga {i}")).collect::<Vec<_>>().join("\n");
+        let mut tab = Tab::from_draft(
+            "scroll_test".into(),
+            None,
+            "test".into(),
+            text,
+            false,
+            0,
+            0,
+            FileEncoding::Utf8 { bom: false },
+        );
+
+        assert_eq!(tab.scroll_line, 0);
+        tab.scroll_to_line(40);
+        assert_eq!(tab.scroll_line, 40);
+
+        // Test wheel scroll down
+        tab.on_edit(text_editor::Action::Scroll { lines: 5 });
+        assert_eq!(tab.scroll_line, 45);
+
+        // Test wheel scroll up
+        tab.on_edit(text_editor::Action::Scroll { lines: -10 });
+        assert_eq!(tab.scroll_line, 35);
+
+        // Cursor should remain at (0, 0)
+        assert_eq!(tab.cursor_position(), (0, 0));
     }
 }
