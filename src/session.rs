@@ -13,6 +13,8 @@ pub struct TabRecord {
     pub cursor_line: usize,
     pub cursor_col: usize,
     pub draft_file: Option<String>,
+    #[serde(default)]
+    pub encoding: Option<crate::tab::FileEncoding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +86,7 @@ pub fn save_session_to(tabs: &[Tab], active_tab: usize, s_dir: &Path, d_dir: &Pa
             cursor_line,
             cursor_col,
             draft_file: draft_filename,
+            encoding: Some(tab.encoding),
         });
     }
 
@@ -126,6 +129,10 @@ pub fn load_session_from(s_dir: &Path, d_dir: &Path) -> Option<(Vec<Tab>, usize)
     let mut tabs = Vec::new();
 
     for tab_rec in record.tabs {
+        let encoding = tab_rec
+            .encoding
+            .unwrap_or(crate::tab::FileEncoding::Utf8 { bom: false });
+
         // Priority 1: Check if draft exists (unsaved changes or untitled buffer)
         if let Some(draft_name) = &tab_rec.draft_file {
             let draft_path = d_dir.join(draft_name);
@@ -138,16 +145,17 @@ pub fn load_session_from(s_dir: &Path, d_dir: &Path) -> Option<(Vec<Tab>, usize)
                     tab_rec.is_dirty,
                     tab_rec.cursor_line,
                     tab_rec.cursor_col,
+                    encoding,
                 );
                 tabs.push(tab);
                 continue;
             }
         }
 
-        // Priority 2: If path is set and exists on disk, load directly from disk
+        // Priority 2: If path is set and exists on disk, load directly from disk with encoding detection
         if let Some(path) = &tab_rec.path {
             if path.exists() {
-                if let Ok(file_text) = fs::read_to_string(path) {
+                if let Ok((file_text, detected_enc)) = crate::tab::read_file_with_encoding(path) {
                     let tab = Tab::from_draft(
                         tab_rec.id,
                         Some(path.clone()),
@@ -156,6 +164,7 @@ pub fn load_session_from(s_dir: &Path, d_dir: &Path) -> Option<(Vec<Tab>, usize)
                         false,
                         tab_rec.cursor_line,
                         tab_rec.cursor_col,
+                        tab_rec.encoding.unwrap_or(detected_enc),
                     );
                     tabs.push(tab);
                     continue;
@@ -172,6 +181,7 @@ pub fn load_session_from(s_dir: &Path, d_dir: &Path) -> Option<(Vec<Tab>, usize)
             false,
             0,
             0,
+            encoding,
         );
         tabs.push(tab);
     }

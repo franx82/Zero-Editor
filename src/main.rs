@@ -53,6 +53,19 @@ enum Message {
     WindowCloseRequested(window::Id),
 }
 
+fn expand_tilde(path: PathBuf) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    if path_str.starts_with("~/") || path_str == "~" {
+        if let Some(home) = dirs::home_dir() {
+            if path_str == "~" {
+                return home;
+            }
+            return home.join(&path_str[2..]);
+        }
+    }
+    path
+}
+
 impl App {
     fn new() -> (Self, Task<Message>) {
         let args: Vec<String> = std::env::args().skip(1).collect();
@@ -61,14 +74,19 @@ impl App {
         // 1. Check if files were passed as command line arguments or via macOS open events
         let mut initial_paths = Vec::new();
         for arg in &args {
-            let path = PathBuf::from(arg);
+            let path = expand_tilde(PathBuf::from(arg));
             if path.exists() {
                 initial_paths.push(path);
             }
         }
         #[cfg(target_os = "macos")]
         {
-            initial_paths.extend(macos::take_initial_files());
+            for path in macos::take_initial_files() {
+                let path = expand_tilde(path);
+                if path.exists() {
+                    initial_paths.push(path);
+                }
+            }
         }
 
         for path in initial_paths {
@@ -337,6 +355,7 @@ impl App {
     }
 
     fn open_path(&mut self, path: PathBuf) {
+        let path = expand_tilde(path);
         // If file is already open in a tab, simply switch to it
         for (i, tab) in self.tabs.iter().enumerate() {
             if let Some(p) = &tab.path {
@@ -643,9 +662,15 @@ impl App {
                 .padding(Padding { top: 2.0, right: 6.0, bottom: 2.0, left: 6.0 })
                 .on_press(Message::ToggleWhitespace),
 
-                text(format!("Ln {}, Col {}  ·  {} righe  ·  UTF-8", cursor_line + 1, cursor_col + 1, total_lines))
-                    .size(11)
-                    .color(theme::TEXT_MUTED),
+                text(format!(
+                    "Ln {}, Col {}  ·  {} righe  ·  {}",
+                    cursor_line + 1,
+                    cursor_col + 1,
+                    total_lines,
+                    active_tab.map(|t| t.encoding.label()).unwrap_or("UTF-8")
+                ))
+                .size(11)
+                .color(theme::TEXT_MUTED),
             ]
             .spacing(10)
             .align_y(Alignment::Center)

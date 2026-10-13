@@ -5,6 +5,128 @@ use iced::widget::text_editor::{self, Cursor, Position};
 
 use crate::highlighter;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FileEncoding {
+    Utf8 { bom: bool },
+    Utf16Le { bom: bool },
+    Utf16Be { bom: bool },
+    Windows1252,
+}
+
+impl FileEncoding {
+    pub fn label(&self) -> &'static str {
+        match self {
+            FileEncoding::Utf8 { bom: false } => "UTF-8",
+            FileEncoding::Utf8 { bom: true } => "UTF-8 BOM",
+            FileEncoding::Utf16Le { .. } => "UTF-16 LE",
+            FileEncoding::Utf16Be { .. } => "UTF-16 BE",
+            FileEncoding::Windows1252 => "Windows-1252",
+        }
+    }
+}
+
+pub fn read_file_with_encoding(path: &std::path::Path) -> io::Result<(String, FileEncoding)> {
+    let bytes = fs::read(path)?;
+    if bytes.is_empty() {
+        return Ok((String::new(), FileEncoding::Utf8 { bom: false }));
+    }
+
+    // 1. Check for BOMs
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        let (cow, _, _) = encoding_rs::UTF_8.decode(&bytes[3..]);
+        let text = cow.trim_start_matches('\u{FEFF}').to_string();
+        return Ok((text, FileEncoding::Utf8 { bom: true }));
+    }
+
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let (cow, _, _) = encoding_rs::UTF_16LE.decode(&bytes[2..]);
+        let text = cow.trim_start_matches('\u{FEFF}').to_string();
+        return Ok((text, FileEncoding::Utf16Le { bom: true }));
+    }
+
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let (cow, _, _) = encoding_rs::UTF_16BE.decode(&bytes[2..]);
+        let text = cow.trim_start_matches('\u{FEFF}').to_string();
+        return Ok((text, FileEncoding::Utf16Be { bom: true }));
+    }
+
+    // 2. Try UTF-8 without BOM
+    if let Ok(text) = std::str::from_utf8(&bytes) {
+        return Ok((text.to_string(), FileEncoding::Utf8 { bom: false }));
+    }
+
+    // 3. Heuristic for UTF-16 without BOM (detect null-byte pattern)
+    if bytes.len() >= 4 {
+        let nulls_even = bytes.iter().step_by(2).filter(|&&b| b == 0).count();
+        let nulls_odd = bytes.iter().skip(1).step_by(2).filter(|&&b| b == 0).count();
+        let half = bytes.len() / 2;
+
+        if nulls_odd > half / 3 && nulls_even < half / 10 {
+            let (cow, had_errors) = encoding_rs::UTF_16LE.decode_without_bom_handling(&bytes);
+            if !had_errors {
+                return Ok((cow.trim_start_matches('\u{FEFF}').to_string(), FileEncoding::Utf16Le { bom: false }));
+            }
+        } else if nulls_even > half / 3 && nulls_odd < half / 10 {
+            let (cow, had_errors) = encoding_rs::UTF_16BE.decode_without_bom_handling(&bytes);
+            if !had_errors {
+                return Ok((cow.trim_start_matches('\u{FEFF}').to_string(), FileEncoding::Utf16Be { bom: false }));
+            }
+        }
+    }
+
+    // 4. Try Windows-1252 fallback
+    let (cow, _, had_errors) = encoding_rs::WINDOWS_1252.decode(&bytes);
+    if !had_errors {
+        return Ok((cow.to_string(), FileEncoding::Windows1252));
+    }
+
+    // 5. Ultimate fallback: lossy UTF-8
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    Ok((text, FileEncoding::Utf8 { bom: false }))
+}
+
+pub fn write_file_with_encoding(path: &std::path::Path, text: &str, encoding: FileEncoding) -> io::Result<()> {
+    match encoding {
+        FileEncoding::Utf8 { bom: false } => {
+            fs::write(path, text.as_bytes())?;
+        }
+        FileEncoding::Utf8 { bom: true } => {
+            let mut bytes = vec![0xEF, 0xBB, 0xBF];
+            bytes.extend_from_slice(text.as_bytes());
+            fs::write(path, &bytes)?;
+        }
+        FileEncoding::Utf16Le { bom } => {
+            let mut bytes = Vec::with_capacity(if bom { 2 } else { 0 } + text.len() * 2);
+            if bom {
+                bytes.extend_from_slice(&[0xFF, 0xFE]);
+            }
+            for u in text.encode_utf16() {
+                bytes.extend_from_slice(&u.to_le_bytes());
+            }
+            fs::write(path, &bytes)?;
+        }
+        FileEncoding::Utf16Be { bom } => {
+            let mut bytes = Vec::with_capacity(if bom { 2 } else { 0 } + text.len() * 2);
+            if bom {
+                bytes.extend_from_slice(&[0xFE, 0xFF]);
+            }
+            for u in text.encode_utf16() {
+                bytes.extend_from_slice(&u.to_be_bytes());
+            }
+            fs::write(path, &bytes)?;
+        }
+        FileEncoding::Windows1252 => {
+            let (cow, _, had_errors) = encoding_rs::WINDOWS_1252.encode(text);
+            if had_errors {
+                fs::write(path, text.as_bytes())?;
+            } else {
+                fs::write(path, &cow)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct Tab {
     pub id: String,
@@ -14,6 +136,7 @@ pub struct Tab {
     pub is_dirty: bool,
     pub saved_text: String,
     pub manual_syntax: Option<String>,
+    pub encoding: FileEncoding,
 }
 
 impl Tab {
@@ -40,11 +163,12 @@ impl Tab {
             is_dirty: false,
             saved_text: String::new(),
             manual_syntax: None,
+            encoding: FileEncoding::Utf8 { bom: false },
         }
     }
 
     pub fn from_file(path: PathBuf) -> Result<Self, io::Error> {
-        let text = fs::read_to_string(&path)?;
+        let (text, encoding) = read_file_with_encoding(&path)?;
         let title = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -60,6 +184,7 @@ impl Tab {
             is_dirty: false,
             saved_text: text,
             manual_syntax: None,
+            encoding,
         })
     }
 
@@ -71,6 +196,7 @@ impl Tab {
         is_dirty: bool,
         cursor_line: usize,
         cursor_col: usize,
+        encoding: FileEncoding,
     ) -> Self {
         let mut content = text_editor::Content::with_text(&text);
         let position = Position {
@@ -96,13 +222,14 @@ impl Tab {
             is_dirty,
             saved_text,
             manual_syntax: None,
+            encoding,
         }
     }
 
     pub fn save(&mut self) -> Result<(), io::Error> {
         if let Some(path) = &self.path {
             let current_text = self.content.text();
-            fs::write(path, &current_text)?;
+            write_file_with_encoding(path, &current_text, self.encoding)?;
             self.saved_text = current_text;
             self.is_dirty = false;
             Ok(())
@@ -113,7 +240,7 @@ impl Tab {
 
     pub fn save_as(&mut self, new_path: PathBuf) -> Result<(), io::Error> {
         let current_text = self.content.text();
-        fs::write(&new_path, &current_text)?;
+        write_file_with_encoding(&new_path, &current_text, self.encoding)?;
         self.title = new_path
             .file_name()
             .and_then(|n| n.to_str())
@@ -327,6 +454,7 @@ mod tests {
             false,
             0,
             15,
+            FileEncoding::Utf8 { bom: false },
         );
         tab.on_edit(text_editor::Action::Edit(text_editor::Edit::Enter));
         assert_eq!(tab.content.line_count(), 2);
@@ -345,6 +473,7 @@ mod tests {
             false,
             0,
             13,
+            FileEncoding::Utf8 { bom: false },
         );
         tab.on_edit(text_editor::Action::Edit(text_editor::Edit::Enter));
         assert_eq!(tab.content.line_count(), 2);
@@ -363,6 +492,7 @@ mod tests {
             false,
             0,
             15, // between { and }
+            FileEncoding::Utf8 { bom: false },
         );
         tab.on_edit(text_editor::Action::Edit(text_editor::Edit::Enter));
         assert_eq!(tab.content.line_count(), 3);
@@ -394,9 +524,24 @@ mod tests {
             false,
             0,
             4,
+            FileEncoding::Utf8 { bom: false },
         );
         tab.smart_backspace();
         assert_eq!(tab.content.text(), "");
         assert_eq!(tab.cursor_position(), (0, 0));
+    }
+
+    #[test]
+    fn test_utf16le_read_write() {
+        let dir = std::env::temp_dir();
+        let test_file = dir.join("zero_test_utf16.txt");
+        let sample = "Ciao mondo in UTF-16\nRiga 2!";
+        write_file_with_encoding(&test_file, sample, FileEncoding::Utf16Le { bom: true }).unwrap();
+
+        let (read_text, enc) = read_file_with_encoding(&test_file).unwrap();
+        assert_eq!(enc, FileEncoding::Utf16Le { bom: true });
+        assert_eq!(read_text, sample);
+
+        let _ = fs::remove_file(test_file);
     }
 }
