@@ -1,0 +1,13 @@
+[package]
+name = "zero-editor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dirs = "7.0.0"
+iced = { version = "0.14.0", features = ["highlighter", "advanced"] }
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+two-face = { version = "0.4", default-features = false, features = ["syntect-default-fancy"] }
+cosmic-text = "0.15"
