@@ -6,27 +6,27 @@ use iced::{Background, Border, Color, Theme};
 // Nord Color Palette (Official Arctic Theme)
 // ----------------------------------------------------------------------------
 #[allow(dead_code)]
-pub const NORD0_POLAR_DARK: Color = Color::from_rgb(0.180, 0.204, 0.251);   // #2e3440 (Editor surface)
+pub const NORD0_POLAR_DARK: Color = Color::from_rgb(0.180, 0.204, 0.251); // #2e3440 (Editor surface)
 #[allow(dead_code)]
-pub const NORD1_POLAR_BAR: Color = Color::from_rgb(0.231, 0.259, 0.322);    // #3b4252 (Header & status bar)
+pub const NORD1_POLAR_BAR: Color = Color::from_rgb(0.231, 0.259, 0.322); // #3b4252 (Header & status bar)
 #[allow(dead_code)]
-pub const NORD2_POLAR_HOVER: Color = Color::from_rgb(0.263, 0.298, 0.369);  // #434c5e (Hover background)
+pub const NORD2_POLAR_HOVER: Color = Color::from_rgb(0.263, 0.298, 0.369); // #434c5e (Hover background)
 #[allow(dead_code)]
-pub const NORD3_POLAR_MUTED: Color = Color::from_rgb(0.482, 0.533, 0.631);  // #7b88a1 (Muted text / borders)
+pub const NORD3_POLAR_MUTED: Color = Color::from_rgb(0.482, 0.533, 0.631); // #7b88a1 (Muted text / borders)
 
 // Snow Storm (Text)
 #[allow(dead_code)]
-pub const NORD4_SNOW_BODY: Color = Color::from_rgb(0.847, 0.871, 0.914);    // #d8dee9 (Body text)
+pub const NORD4_SNOW_BODY: Color = Color::from_rgb(0.847, 0.871, 0.914); // #d8dee9 (Body text)
 #[allow(dead_code)]
-pub const NORD6_SNOW_BRIGHT: Color = Color::from_rgb(0.925, 0.937, 0.957);  // #eceff4 (Active text)
+pub const NORD6_SNOW_BRIGHT: Color = Color::from_rgb(0.925, 0.937, 0.957); // #eceff4 (Active text)
 
 // Frost (Accents)
 #[allow(dead_code)]
-pub const NORD7_FROST_TEAL: Color = Color::from_rgb(0.561, 0.737, 0.733);   // #8fbcbb (Frost teal)
+pub const NORD7_FROST_TEAL: Color = Color::from_rgb(0.561, 0.737, 0.733); // #8fbcbb (Frost teal)
 #[allow(dead_code)]
-pub const NORD8_FROST_ICE: Color = Color::from_rgb(0.533, 0.753, 0.816);    // #88c0d0 (Frost cyan / active border)
+pub const NORD8_FROST_ICE: Color = Color::from_rgb(0.533, 0.753, 0.816); // #88c0d0 (Frost cyan / active border)
 #[allow(dead_code)]
-pub const NORD9_FROST_BLUE: Color = Color::from_rgb(0.506, 0.631, 0.757);   // #81a1c1 (Frost glacier blue)
+pub const NORD9_FROST_BLUE: Color = Color::from_rgb(0.506, 0.631, 0.757); // #81a1c1 (Frost glacier blue)
 
 // Aurora
 #[allow(dead_code)]
@@ -77,7 +77,11 @@ pub fn tab_button_style(is_active: bool) -> impl Fn(&Theme, button::Status) -> b
             background: Some(Background::Color(bg)),
             text_color,
             border: Border {
-                color: if is_active { BORDER_ACTIVE } else { Color::TRANSPARENT },
+                color: if is_active {
+                    BORDER_ACTIVE
+                } else {
+                    Color::TRANSPARENT
+                },
                 width: 1.0,
                 radius: Radius {
                     top_left: 4.0,
@@ -133,7 +137,10 @@ pub fn statusbar_container_style(_theme: &Theme) -> container::Style {
     }
 }
 
-pub fn text_input_style(_theme: &Theme, status: iced::widget::text_input::Status) -> iced::widget::text_input::Style {
+pub fn text_input_style(
+    _theme: &Theme,
+    status: iced::widget::text_input::Status,
+) -> iced::widget::text_input::Style {
     iced::widget::text_input::Style {
         background: Background::Color(NORD2_POLAR_HOVER),
         border: Border {
@@ -170,6 +177,13 @@ pub fn picker_container_style(_theme: &Theme) -> container::Style {
 
 pub fn picker_item_style(_theme: &Theme, status: button::Status) -> button::Style {
     let (bg, text_color) = match status {
+        button::Status::Disabled => (
+            None,
+            Color {
+                a: 0.45,
+                ..TEXT_MUTED
+            },
+        ),
         button::Status::Hovered => (Some(Background::Color(BG_TAB_HOVER)), TEXT_PRIMARY),
         button::Status::Pressed => (Some(Background::Color(BORDER_COLOR)), TEXT_ACCENT),
         _ => (None, NORD4_SNOW_BODY),
@@ -186,3 +200,20 @@ pub fn picker_item_style(_theme: &Theme, status: button::Status) -> button::Styl
     }
 }
 
+pub fn primary_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: Some(Background::Color(
+            if matches!(status, button::Status::Hovered) {
+                NORD7_FROST_TEAL
+            } else {
+                NORD8_FROST_ICE
+            },
+        )),
+        text_color: BG_EDITOR,
+        border: Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}

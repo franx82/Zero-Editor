@@ -3,6 +3,27 @@
 
 typedef void (*FileOpenCallback)(const char *path);
 static FileOpenCallback g_file_callback = NULL;
+static void (*g_quit_callback)(void) = NULL;
+void register_macos_quit_callback(void (*callback)(void)) { g_quit_callback = callback; }
+
+void style_macos_titlebar(void) {
+    NSWindow *window = [NSApp mainWindow];
+    if (!window) return;
+
+    // Nord1 (#3b4252) is the editor header and tab-bar surface. A transparent
+    // native titlebar lets this solid window background show through unchanged.
+    window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    window.titlebarAppearsTransparent = YES;
+    window.backgroundColor = [NSColor colorWithSRGBRed:0.231
+                                                 green:0.259
+                                                  blue:0.322
+                                                 alpha:1.0];
+}
+
+static NSApplicationTerminateReply zero_application_shouldTerminate(id self __unused, SEL cmd __unused, NSApplication *app __unused) {
+    if (g_quit_callback) { g_quit_callback(); return NSTerminateCancel; }
+    return NSTerminateNow;
+}
 
 @interface ZeroAppleEventHandler : NSObject
 - (void)handleOpenDocuments:(NSAppleEventDescriptor *)event withReplyEvent:(NSAppleEventDescriptor *)replyEvent;
@@ -114,6 +135,11 @@ static void zero_install_apple_event_handlers(void) {
 static void zero_hook_delegate(id delegate) {
     if (!delegate) return;
     Class cls = [delegate class];
+    SEL quit = @selector(applicationShouldTerminate:);
+    if (!class_addMethod(cls, quit, (IMP)zero_application_shouldTerminate, "q@:@")) {
+        Method method = class_getInstanceMethod(cls, quit);
+        if (method) method_setImplementation(method, (IMP)zero_application_shouldTerminate);
+    }
     
     if (!class_getInstanceMethod(cls, @selector(application:openURLs:))) {
         class_addMethod(cls, @selector(application:openURLs:), (IMP)zero_application_openURLs, "v@:@@");

@@ -1,13 +1,25 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
+PROFILE=release
+INSTALL=false
+for arg in "$@"; do
+    case "$arg" in
+        --debug) PROFILE=debug ;;
+        --install) INSTALL=true ;;
+        *) echo "Usage: $0 [--debug] [--install]" >&2; exit 2 ;;
+    esac
+done
 
 # Script to build and package Zero Editor as a native macOS .app bundle
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR"
 
-echo "Building release binary..."
-source "$HOME/.cargo/env" 2>/dev/null || true
-cargo build --release
+echo "Building $PROFILE binary..."
+if ! command -v cargo >/dev/null 2>&1 && [ -r "$HOME/.cargo/env" ]; then
+    source "$HOME/.cargo/env"
+fi
+if [ "$PROFILE" = release ]; then cargo build --release --locked; else cargo build --locked; fi
 
 APP_NAME="Zero Editor"
 BUNDLE_DIR="$DIR/target/$APP_NAME.app"
@@ -20,13 +32,18 @@ mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 
 # Copy binary
-cp "$DIR/target/release/zero-editor" "$MACOS_DIR/zero-editor"
+cp "$DIR/target/$PROFILE/zero-editor" "$MACOS_DIR/zero-editor"
 chmod +x "$MACOS_DIR/zero-editor"
 
 # Copy app icon
 if [ -f "$DIR/assets/icon.icns" ]; then
     cp "$DIR/assets/icon.icns" "$RESOURCES_DIR/icon.icns"
 fi
+
+# Bundled font license (font data is embedded in the executable)
+mkdir -p "$RESOURCES_DIR/licenses"
+cp "$DIR/assets/fonts/OFL.txt" "$RESOURCES_DIR/licenses/JetBrainsMono-OFL.txt"
+cp "$DIR/LICENSE" "$RESOURCES_DIR/licenses/ZeroEditor-MIT.txt"
 
 # Create Info.plist
 cat <<EOF > "$BUNDLE_DIR/Contents/Info.plist"
@@ -42,6 +59,12 @@ cat <<EOF > "$BUNDLE_DIR/Contents/Info.plist"
     <string>dev.zero.editor</string>
     <key>CFBundleName</key>
     <string>$APP_NAME</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+    </array>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -110,17 +133,15 @@ cat <<EOF > "$BUNDLE_DIR/Contents/Info.plist"
 </plist>
 EOF
 
-# Register with macOS LaunchServices
-if [ -f "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" ]; then
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$BUNDLE_DIR"
-fi
+# Sign the local bundle before registering it. Distribution signing/notarization
+# can be added when publishing a release.
+codesign --force --sign - "$BUNDLE_DIR"
 
 echo "✓ $APP_NAME.app created successfully at: $BUNDLE_DIR"
 
-if [ -d "/Applications/$APP_NAME.app" ]; then
+if [ "$INSTALL" = true ]; then
     echo "Updating existing installation in /Applications/$APP_NAME.app..."
-    rm -rf "/Applications/$APP_NAME.app"
-    cp -R "$BUNDLE_DIR" "/Applications/"
+    ditto "$BUNDLE_DIR" "/Applications/$APP_NAME.app"
     if [ -f "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" ]; then
         /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "/Applications/$APP_NAME.app"
     fi

@@ -1,146 +1,125 @@
-<p align="center">
-  <img src="assets/icon.png" width="140" height="140" alt="Zero Editor Logo" />
-</p>
-
+<p align="center"><img src="assets/icon.png" width="120" alt="Zero Editor" /></p>
 <h1 align="center">Zero Editor</h1>
+<p align="center">A local macOS text editor built in Rust. A clean interface and keyboard-driven editing.</p>
 
-<p align="center">
-  <strong>Un editor di testo minimalista nativo per macOS, scritto in Rust.</strong><br>
-  Ispirato all'essenzialità e alla reattività di Zed, con <em>zero fronzoli</em>.
-</p>
+Inspired by Zed's simplicity and Vim's editing workflow. No accounts, integrated AI or remote document services.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Platform-macOS-000000?logo=apple" alt="macOS" />
-  <img src="https://img.shields.io/badge/Language-Rust-orange?logo=rust" alt="Rust" />
-  <img src="https://img.shields.io/badge/Theme-Nord-88c0d0" alt="Nord Theme" />
-  <img src="https://img.shields.io/badge/GUI-iced%200.14-blue" alt="iced" />
-  <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT" />
-</p>
+## Download
 
----
+Download **Zero-Editor-v0.1.0-macos-arm64.zip** from the [latest release](https://github.com/franx82/Zero-Editor/releases/latest),
+extract it and move **Zero Editor.app** to Applications. This package targets **Apple Silicon**, with macOS 12 as its declared minimum.
+Only the current development Mac has been checked; older macOS versions have not been verified.
 
-## ⚡ Filosofia
+The app is ad hoc signed, without a Developer ID signature or notarization. macOS may block its first launch.
+Release assets include a SHA-256 checksum file. Intel and universal builds are not included.
 
-- **Zero Fronzoli**: Nessuna telemetria, nessun server remoto, nessun account, nessun login.
-- **Nessuna AI Invasiva**: Nessun assistente che distrae o riscrive il codice in background.
-- **Velocità & Metal GPU**: Motore grafico hardware-accelerato su Apple Silicon / Metal a 60/120Hz ProMotion via `iced` e `wgpu`.
-- **Persistenza Totale**: Puoi chiudere l'app, riavviare o spegnere il Mac in qualsiasi momento. Tutti i tab aperti, l'ordine, la riga/colonna del cursore e persino i buffer non salvati (*drafts*) vengono ripristinati istantaneamente alla riapertura.
+## Features
 
----
+- English Nord interface, unified macOS titlebar, Helvetica Neue Medium UI and bundled JetBrains Mono editor fonts.
+- Reorder tabs by dragging; detach them into native windows by dragging out of the bar.
+- New tabs from the inline `+`, double-clicking empty tab-bar space, or `⌘N` / `⌘T`.
+- Split with the next tab, or the previous tab when the current tab is last.
+- Finder, drag-and-drop and command-line file opening, with immediate editor focus.
+- Searchable command palette, context menus and popups that close when clicked outside.
+- Literal/regex search, case sensitivity, wraparound and single/global replacement; regex replacements support `$1`, `$2`, etc.
+- Unicode-aware line:column navigation, undo/redo and line/block editing commands.
+- Line numbers, syntax highlighting, language selection, font zoom and optional whitespace markers.
+- Smart indentation, Tab/Shift+Tab and indentation-aware backspace.
+- UTF-8, UTF-16 LE/BE with or without BOM, and Windows-1252 fallback.
 
-## ✨ Caratteristiche
+Editing is direct. Vim Normal/Insert/Visual modes, operators and registers are planned, but **not implemented**.
+See the [roadmap](docs/ROADMAP.md).
 
-### 1. Persistenza Automatica della Sessione
-- Salvataggio continuo in `~/Library/Application Support/dev.zero.editor/session.json`.
-- Buffer modificati o non ancora salvati archiviati come bozze in `drafts/`: nessuna perdita di dati accidentale.
+## Tabs and windows
 
-### 2. Estetica & Stile Nord (Arctic Dark)
-- Palette ufficiale **Nord**:
-  - Superficie editor: `nord0` (`#2e3440`)
-  - Header e Status bar: `nord1` (`#3b4252`)
-  - Tab attivi / hover: `nord2` (`#434c5e`)
-  - Bordi e testi secondari: `nord3` (`#4c566a`) / `nord4` (`#d8dee9`)
-  - Accenti e selezioni: `nord8` (`#88c0d0` Frost Ice)
-  - Pallino file modificato: `nord12` (`#d08770` Aurora Orange)
-- Title bar nativa macOS: rispetta l'aspetto chiaro/scuro del sistema operativo per la barra del titolo, mantenendo il tema Nord uniforme all'interno.
+Drag a tab along the bar to reorder it, or vertically outside the bar to move it into a new native window.
+The context menu offers the same action. Middle-click closes a tab.
 
-### 3. Syntax Highlighting Modulare (Oltre 900 Linguaggi)
-- Bundled con il motore di sintassi di `two-face` / `syntect` (**919 definizioni di sintassi pronte all'uso**).
-- **Rilevamento automatico**:
-  - Dall'estensione (`.rs`, `.py`, `.ts`, `.tsx`, `.js`, `.go`, `.c`, `.cpp`, `.zig`, `.swift`, `.json`, `.toml`, `.yaml`, `.sql`, `.md`, ecc.).
-  - Dal nome del file (`Dockerfile`, `Makefile`, `Cargo.toml`, `Cargo.lock`, `.gitignore`, `CMakeLists.txt`).
-  - Dallo shebang iniziale (`#!/usr/bin/env python`, `#!/bin/bash`, `#!/usr/bin/env node`, ecc.).
-- **Language Picker Rapido (`⌘ + L`)**: menu fluttuante di ricerca per selezionare o cambiare la sintassi in qualsiasi momento.
-- Tasto `ON / OFF` nella status bar per disattivare l'evidenziazione con un clic.
+The split icon (`⌘\`) pairs the current tab with its immediate right neighbor. On the last tab, it pairs
+with the previous tab, preserving tab order. Activate it again to return to one pane. Editing either pane
+keeps the pair visible; selecting a tab outside the pair updates the split. A single tab does not split.
 
-### 4. Dot per Spazi e Indicatori Tab
-- Micro-font vettoriale TrueType incorporato (`assets/ZeroWhitespace.ttf`, <1KB) a zero costo di runtime e con precisione monospazio al pixel (`8.40px`).
-- I caratteri effettivi rimangono puri spazi e tab nel testo sorgente (nessun carattere strano salvato su disco o nei compilatori).
-- Attivabile/disattivabile al volo con **`⌘ + ⇧ + D`** (o **`⌘ + .`**) o dal pulsante **`· Dot: ON / OFF`** nella status bar.
+The status bar shows the document path, language, encoding and cursor position.
+Whitespace markers are available from the command palette or `⌘.`.
 
-### 5. Incolonnamento Automatico Intelligente (Smart Indent)
-- Mantiene l'indentazione precedente quando premi `Invio`.
-- Indentazione automatica a blocchi (+4 spazi) dopo `{`, `(`, `[`, o `:`.
-- Espansione automatica tra parentesi `{}`: premendo `Invio` con il cursore tra `{` e `}` crea 3 righe, indentando quella centrale con il cursore pronto e chiudendo la graffa all'indentazione di partenza.
-- **Tab**: indenta la selezione o inserisce spazi allineati al prossimo tab stop di 4 colonne.
-- **⇧ + Tab**: de-indenta la riga o la selezione.
-- **Smart Backspace**: cancella 4 spazi di indentazione in un unico colpo.
+## Document recovery
 
----
+Session data lives in `~/Library/Application Support/dev.zero.editor/`:
 
-## ⌨️ Scorciatoie da Tastiera
+- `session.json`: documents, order, cursor position, language and encoding.
+- `drafts/`: copies of unsaved changes.
+- `session.previous.json`: the previous committed session and its retained drafts.
+- `session.lock`: prevents competing processes from overwriting the same session.
 
-| Scorciatoia | Azione |
-| :--- | :--- |
-| `⌘ + N` / `⌘ + T` | Nuovo tab |
-| `⌘ + O` | Apri file (dialog nativo macOS) |
-| `⌘ + S` | Salva file corrente |
-| `⌘ + ⇧ + S` | Salva con nome |
-| `⌘ + W` | Chiudi tab attivo |
-| `⌘ + L` | Apri Language Picker / selettore sintassi |
-| `Esc` | Chiudi il Language Picker |
-| `⌘ + ⇧ + D` / `⌘ + .` | Toggle visualizzazione dot spazi / tab |
-| `Tab` | Indenta riga / selezione (4 spazi) |
-| `⇧ + Tab` | De-indenta riga / selezione |
-| `⌘ + 1` .. `⌘ + 9` | Seleziona tab per indice |
-| `⌃ + Tab` / `⌘ + ⇧ + ]` | Tab successivo |
-| `⌃ + ⇧ + Tab` / `⌘ + ⇧ + [` | Tab precedente |
-| **Drag & Drop** | Trascina qualsiasi file dal Finder per aprirlo |
+Changes are archived on a background thread after approximately 400 ms of inactivity. Closing a window
+or quitting waits for pending writes. A crash can lose changes that have not yet been archived.
+Files and manifests use a synchronized temporary file and rename; immutable drafts preserve the previous
+session if a new write fails. Saving follows symlinks and preserves Unix permissions, but does not guarantee
+preservation of ACLs or extended attributes.
 
----
+Closing a modified tab offers **Save / Don't save / Cancel**. Files received at startup are added to the
+recovered session. If recovery fails, the original data is preserved and automatic archiving is suspended.
+A second process can edit files but cannot archive drafts into the locked session.
 
-## 🚀 Compilazione ed Esecuzione
+All windows share one session writer. Detaching preserves the buffer, cursor and undo history. Closing
+a window retains its documents for the next launch; close individual tabs to remove them from the session.
+Recovered documents reopen in **one window**. Window geometry and split layouts are not persisted, and
+dragging tabs between existing windows is not supported.
 
-### Prerequisiti
-- macOS (Apple Silicon o Intel)
-- Toolchain Rust installata (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
+Malformed Unicode with a BOM is rejected. If a Windows-1252 document contains unrepresentable characters,
+saving stops; explicitly convert it to UTF-8 from the palette before saving again.
 
-### Esecuzione con Cargo
+## Shortcuts
+
+| Action | Shortcut |
+|---|---|
+| Command palette | `⌘⇧P` |
+| Toggle adjacent split | `⌘\` |
+| New tab | `⌘N` / `⌘T` |
+| Open file | `⌘O` |
+| Save / Save as | `⌘S` / `⌘⇧S` |
+| Close tab / Quit | `⌘W` / `⌘Q` |
+| Find / Find and replace | `⌘F` / `⌘⌥F` |
+| Next / previous match | `⌘G` / `⌘⇧G` |
+| Go to line:column | `⌃G` |
+| Undo / Redo | `⌘Z` / `⌘⇧Z` |
+| Duplicate lines | `⌘⇧D` |
+| Delete lines | `⌘⇧K` |
+| Move lines up / down | `⌥↑` / `⌥↓` |
+| Select language | `⌘L` |
+| Toggle whitespace markers | `⌘.` |
+| Increase / decrease / reset font size | `⌘+` / `⌘−` / `⌘0` |
+| Select tab | `⌘1` … `⌘9` |
+| Next / previous tab | `⌃Tab` / `⌃⇧Tab` |
+| Close popup and return to editing | `Esc` |
+
+## Build and development
+
+Requires macOS, Command Line Tools and Rust stable (edition 2024). Dependencies are pinned in `Cargo.lock`.
+
 ```bash
-# Avvia l'editor
-cargo run --release
-
-# Apri file specifici direttamente da terminale
-cargo run --release -- src/main.rs Cargo.toml
-```
-
-### Creazione del pacchetto macOS nativo (`.app`)
-Esegui lo script di packaging incluso:
-```bash
+cargo run --locked -- src/main.rs
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
 ./scripts/build_app.sh
 ```
 
-Verrà generato il bundle **`target/Zero Editor.app`** completo di icona nativa Retina e metadata.  
-Puoi spostarlo direttamente nella cartella Applicazioni:
-```bash
-cp -r "target/Zero Editor.app" /Applications/
-```
+The script creates an ad hoc signed `target/Zero Editor.app` without installing it.
+Use `./scripts/build_app.sh --install` to install explicitly, or `--debug` for a development bundle.
+Set `ZERO_EDITOR_STATE_DIR=/path/to/state` to isolate a development session.
 
----
+`src/main.rs` owns each window's UI; `src/desktop.rs` coordinates native windows and session writing.
+`src/tab.rs` implements document editing and encoding; `src/session.rs` and `src/storage.rs` handle recovery
+and atomic writes. The remaining modules cover search, commands, tabs, context menus, highlighting and theme.
 
-## 📂 Struttura del Progetto
+## Current limits
 
-```text
-Zero-Editor/
-├── assets/
-│   ├── icon.icns               # Icona nativa multi-risoluzione macOS
-│   ├── icon.png                # Icona master 1024x1024
-│   └── ZeroWhitespace.ttf      # Micro-font per rendering whitespace
-├── scripts/
-│   ├── build_app.sh            # Script per compilare e impacchettare l'app macOS
-│   ├── generate_icon.py        # Generatore icona .png e .icns
-│   └── generate_whitespace_font.py # Generatore font per spazi/tab
-├── src/
-│   ├── highlighter.rs          # Integrazione two-face e rendering dot spazi/tab
-│   ├── main.rs                 # Stato dell'app, ciclo di eventi, interfaccia iced
-│   ├── session.rs              # Gestore persistenza sessione e bozze non salvate
-│   ├── tab.rs                  # Gestione buffer, auto-indentazione e cursore
-│   └── theme.rs                # Palette colori ufficiale Nord e stili widget
-└── Cargo.toml
-```
+No LSP, multiple cursors, project explorer, macros or plugins. Undo history uses bounded in-memory snapshots
+and does not survive a restart. Search highlights render per line, while multiline regexes remain navigable
+and replaceable. There is no word wrap. External file changes are not detected before saving.
 
----
+## License
 
-## 📄 Licenza
-
-Rilasciato sotto licenza MIT.
+[MIT](LICENSE) for code. [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) is distributed under
+the [SIL Open Font License 1.1](assets/fonts/OFL.txt).

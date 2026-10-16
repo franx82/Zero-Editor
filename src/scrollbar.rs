@@ -1,13 +1,16 @@
+use crate::theme;
 use iced::mouse;
 use iced::widget::canvas::{Action, Event, Frame, Geometry, Path, Program};
-use iced::{border, Color, Point, Rectangle, Renderer, Size, Theme};
-use crate::theme;
+use iced::{Color, Point, Rectangle, Renderer, Size, Theme, border};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ScrollbarState {
     pub is_dragging: bool,
     pub drag_start_y: f32,
     pub drag_start_line: usize,
+    pub viewport_height: f32,
+    pub viewport_key: String,
+    pub line_height: f32,
 }
 
 impl Default for ScrollbarState {
@@ -16,6 +19,9 @@ impl Default for ScrollbarState {
             is_dragging: false,
             drag_start_y: 0.0,
             drag_start_line: 0,
+            viewport_height: 0.0,
+            viewport_key: String::new(),
+            line_height: 0.0,
         }
     }
 }
@@ -24,6 +30,9 @@ pub struct Scrollbar<Message> {
     pub total_lines: usize,
     pub current_line: usize,
     pub on_scroll: Box<dyn Fn(usize) -> Message>,
+    line_height: f32,
+    viewport_key: String,
+    on_viewport: Option<Box<dyn Fn(f32) -> Message>>,
 }
 
 impl<Message> Scrollbar<Message> {
@@ -36,15 +45,31 @@ impl<Message> Scrollbar<Message> {
             total_lines,
             current_line,
             on_scroll: Box::new(on_scroll),
+            line_height: 21.0,
+            viewport_key: String::new(),
+            on_viewport: None,
         }
     }
 
+    pub fn metrics(
+        mut self,
+        line_height: f32,
+        key: String,
+        on_viewport: impl Fn(f32) -> Message + 'static,
+    ) -> Self {
+        self.line_height = line_height;
+        self.viewport_key = key;
+        self.on_viewport = Some(Box::new(on_viewport));
+        self
+    }
+
     fn visible_lines(&self, track_height: f32) -> usize {
-        (track_height / 21.0).max(1.0) as usize
+        ((track_height - 20.0).max(0.0) / self.line_height).max(1.0) as usize
     }
 
     fn max_scroll(&self, track_height: f32) -> usize {
-        self.total_lines.saturating_sub(self.visible_lines(track_height))
+        self.total_lines
+            .saturating_sub(self.visible_lines(track_height))
     }
 
     fn thumb_geometry(&self, track_height: f32) -> (f32, f32) {
@@ -91,6 +116,18 @@ impl<Message: Clone> Program<Message> for Scrollbar<Message> {
         _cursor: mouse::Cursor,
     ) -> Option<Action<Message>> {
         let max_scroll = self.max_scroll(bounds.height);
+        let height = (bounds.height - 20.0).max(self.line_height);
+        if (state.viewport_height - height).abs() > 0.01
+            || state.viewport_key != self.viewport_key
+            || state.line_height != self.line_height
+        {
+            state.viewport_key = self.viewport_key.clone();
+            state.line_height = self.line_height;
+            state.viewport_height = height;
+            if let Some(callback) = &self.on_viewport {
+                return Some(Action::publish(callback(height)));
+            }
+        }
 
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -123,12 +160,15 @@ impl<Message: Clone> Program<Message> for Scrollbar<Message> {
                     let cursor_y = position.y - bounds.y;
                     let visible = self.visible_lines(bounds.height);
                     let ratio = (visible as f32 / self.total_lines as f32).clamp(0.04, 1.0);
-                    let thumb_height = (bounds.height * ratio).clamp(24.0, (bounds.height - 10.0).max(24.0));
+                    let thumb_height =
+                        (bounds.height * ratio).clamp(24.0, (bounds.height - 10.0).max(24.0));
                     let available_track = (bounds.height - thumb_height).max(1.0);
 
                     let delta_y = cursor_y - state.drag_start_y;
-                    let delta_lines = (delta_y / available_track * max_scroll as f32).round() as i32;
-                    let new_line = (state.drag_start_line as i32 + delta_lines).clamp(0, max_scroll as i32) as usize;
+                    let delta_lines =
+                        (delta_y / available_track * max_scroll as f32).round() as i32;
+                    let new_line = (state.drag_start_line as i32 + delta_lines)
+                        .clamp(0, max_scroll as i32) as usize;
 
                     if new_line != self.current_line {
                         return Some(Action::publish((self.on_scroll)(new_line)).and_capture());
@@ -152,7 +192,8 @@ impl<Message: Clone> Program<Message> for Scrollbar<Message> {
                         mouse::ScrollDelta::Lines { y, .. } => -(*y as i32),
                         mouse::ScrollDelta::Pixels { y, .. } => -(*y / 18.0).round() as i32,
                     };
-                    let new_line = (self.current_line as i32 + lines * 3).clamp(0, max_scroll as i32) as usize;
+                    let new_line =
+                        (self.current_line as i32 + lines * 3).clamp(0, max_scroll as i32) as usize;
                     if new_line != self.current_line {
                         return Some(Action::publish((self.on_scroll)(new_line)).and_capture());
                     }
@@ -280,4 +321,3 @@ mod tests {
         assert_eq!(line_bottom, max_scroll);
     }
 }
-

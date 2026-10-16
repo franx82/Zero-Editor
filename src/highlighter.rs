@@ -2,11 +2,13 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::LazyLock;
 
+use iced::Color;
 use iced::advanced::text::highlighter::{Format, Highlighter as IcedHighlighter};
 use iced::font::{self, Font};
-use iced::Color;
 use two_face::re_exports::syntect::highlighting::{self, Theme as SyntectTheme};
-use two_face::re_exports::syntect::parsing::{self, ScopeStack, ScopeStackOp, SyntaxReference, SyntaxSet};
+use two_face::re_exports::syntect::parsing::{
+    self, ScopeStack, ScopeStackOp, SyntaxReference, SyntaxSet,
+};
 
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_no_newlines);
 static NORD_THEME: LazyLock<SyntectTheme> = LazyLock::new(|| {
@@ -21,21 +23,24 @@ const LINES_PER_SNAPSHOT: usize = 50;
 pub struct Settings {
     pub token: String,
     pub show_whitespace: bool,
+    pub search: Option<(String, bool, bool)>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Highlight {
     Syntax(highlighting::StyleModifier),
     Whitespace,
+    SearchMatch,
 }
 
 impl Highlight {
     pub fn color(&self) -> Option<Color> {
         match self {
-            Self::Syntax(modifier) => modifier.foreground.map(|c| {
-                Color::from_rgba8(c.r, c.g, c.b, c.a as f32 / 255.0)
-            }),
+            Self::Syntax(modifier) => modifier
+                .foreground
+                .map(|c| Color::from_rgba8(c.r, c.g, c.b, c.a as f32 / 255.0)),
             Self::Whitespace => Some(crate::theme::WHITESPACE_COLOR),
+            Self::SearchMatch => Some(crate::theme::NORD13_AURORA_YELLOW),
         }
     }
 
@@ -47,15 +52,27 @@ impl Highlight {
 
                 if bold || italic {
                     Some(Font {
-                        weight: if bold { font::Weight::Bold } else { font::Weight::Normal },
-                        style: if italic { font::Style::Italic } else { font::Style::Normal },
-                        ..Font::MONOSPACE
+                        weight: if bold {
+                            font::Weight::Bold
+                        } else {
+                            font::Weight::Normal
+                        },
+                        style: if italic {
+                            font::Style::Italic
+                        } else {
+                            font::Style::Normal
+                        },
+                        ..crate::typography::MONO
                     })
                 } else {
                     None
                 }
             }),
             Self::Whitespace => Some(Font::with_name("ZeroWhitespace")),
+            Self::SearchMatch => Some(Font {
+                weight: font::Weight::Bold,
+                ..crate::typography::MONO
+            }),
         }
     }
 
@@ -73,6 +90,23 @@ pub struct NordHighlighter {
     caches: Vec<(parsing::ParseState, ScopeStack)>,
     current_line: usize,
     show_whitespace: bool,
+    search_pattern: Option<regex::Regex>,
+}
+
+fn search_pattern(settings: &Settings) -> Option<regex::Regex> {
+    let (query, case_sensitive, regex) = settings.search.as_ref()?;
+    if query.is_empty() {
+        return None;
+    }
+    regex::RegexBuilder::new(&if *regex {
+        query.clone()
+    } else {
+        regex::escape(query)
+    })
+    .case_insensitive(!case_sensitive)
+    .multi_line(true)
+    .build()
+    .ok()
 }
 
 impl IcedHighlighter for NordHighlighter {
@@ -92,6 +126,7 @@ impl IcedHighlighter for NordHighlighter {
             caches: vec![(parser, stack)],
             current_line: 0,
             show_whitespace: settings.show_whitespace,
+            search_pattern: search_pattern(settings),
         }
     }
 
@@ -99,6 +134,7 @@ impl IcedHighlighter for NordHighlighter {
         self.syntax = find_syntax(&new_settings.token);
         self.highlighter = highlighting::Highlighter::new(&NORD_THEME);
         self.show_whitespace = new_settings.show_whitespace;
+        self.search_pattern = search_pattern(new_settings);
         self.change_line(0);
     }
 
@@ -113,12 +149,11 @@ impl IcedHighlighter for NordHighlighter {
             self.current_line = 0;
         }
 
-        let (parser, stack) = self.caches.last().cloned().unwrap_or_else(|| {
-            (
-                parsing::ParseState::new(self.syntax),
-                ScopeStack::new(),
-            )
-        });
+        let (parser, stack) = self
+            .caches
+            .last()
+            .cloned()
+            .unwrap_or_else(|| (parsing::ParseState::new(self.syntax), ScopeStack::new()));
 
         self.caches.push((parser, stack));
     }
@@ -187,6 +222,37 @@ impl IcedHighlighter for NordHighlighter {
             }
         }
 
+        if let Some(pattern) = &self.search_pattern {
+            let matches: Vec<_> = pattern.find_iter(line).map(|m| m.range()).collect();
+            let mut marked = Vec::new();
+            for (range, highlight) in spans {
+                let mut boundaries = vec![range.start, range.end];
+                for found in &matches {
+                    if found.start > range.start && found.start < range.end {
+                        boundaries.push(found.start);
+                    }
+                    if found.end > range.start && found.end < range.end {
+                        boundaries.push(found.end);
+                    }
+                }
+                boundaries.sort_unstable();
+                boundaries.dedup();
+                for pair in boundaries.windows(2) {
+                    let matched = matches
+                        .iter()
+                        .any(|m| m.start <= pair[0] && m.end >= pair[1]);
+                    marked.push((
+                        pair[0]..pair[1],
+                        if matched {
+                            Highlight::SearchMatch
+                        } else {
+                            highlight.clone()
+                        },
+                    ));
+                }
+            }
+            return Box::new(marked.into_iter());
+        }
         Box::new(spans.into_iter())
     }
 
@@ -271,10 +337,14 @@ pub fn detect_syntax_and_name(path: Option<&Path>, preview: &str) -> (String, St
         if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
             match file_name {
                 "Dockerfile" | "dockerfile" => return ("dockerfile".into(), "Dockerfile".into()),
-                "Makefile" | "makefile" | "GNUmakefile" => return ("makefile".into(), "Makefile".into()),
+                "Makefile" | "makefile" | "GNUmakefile" => {
+                    return ("makefile".into(), "Makefile".into());
+                }
                 "Cargo.lock" => return ("toml".into(), "TOML (Cargo.lock)".into()),
                 "Cargo.toml" => return ("toml".into(), "TOML (Cargo.toml)".into()),
-                ".gitignore" | ".gitattributes" | ".gitmodules" => return ("git".into(), "Git Config".into()),
+                ".gitignore" | ".gitattributes" | ".gitmodules" => {
+                    return ("git".into(), "Git Config".into());
+                }
                 "CMakeLists.txt" => return ("cmake".into(), "CMake".into()),
                 _ => {}
             }
@@ -386,22 +456,49 @@ mod tests {
 
     #[test]
     fn test_syntect_with_dots() {
-        let mut h1 = NordHighlighter::new(&Settings { token: "rs".into(), show_whitespace: false });
+        let mut h1 = NordHighlighter::new(&Settings {
+            token: "rs".into(),
+            show_whitespace: false,
+            search: None,
+        });
         let spans1: Vec<_> = h1.highlight_line("let x = 5;").collect();
 
-        let mut h2 = NordHighlighter::new(&Settings { token: "rs".into(), show_whitespace: false });
+        let mut h2 = NordHighlighter::new(&Settings {
+            token: "rs".into(),
+            show_whitespace: false,
+            search: None,
+        });
         let spans2: Vec<_> = h2.highlight_line("let·x·=·5;").collect();
 
-        eprintln!("Normal: {:?}", spans1.iter().map(|(r, h)| (r.clone(), h.color())).collect::<Vec<_>>());
-        eprintln!("With dots: {:?}", spans2.iter().map(|(r, h)| (r.clone(), h.color())).collect::<Vec<_>>());
+        eprintln!(
+            "Normal: {:?}",
+            spans1
+                .iter()
+                .map(|(r, h)| (r.clone(), h.color()))
+                .collect::<Vec<_>>()
+        );
+        eprintln!(
+            "With dots: {:?}",
+            spans2
+                .iter()
+                .map(|(r, h)| (r.clone(), h.color()))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn test_highlighter_whitespace_enabled() {
-        let mut h = NordHighlighter::new(&Settings { token: "rs".into(), show_whitespace: true });
+        let mut h = NordHighlighter::new(&Settings {
+            token: "rs".into(),
+            show_whitespace: true,
+            search: None,
+        });
         let spans: Vec<_> = h.highlight_line("  let x = 1;\t").collect();
 
-        let ws_spans: Vec<_> = spans.iter().filter(|(_, h)| matches!(h, Highlight::Whitespace)).collect();
+        let ws_spans: Vec<_> = spans
+            .iter()
+            .filter(|(_, h)| matches!(h, Highlight::Whitespace))
+            .collect();
         assert!(!ws_spans.is_empty(), "Whitespace spans must be generated");
         // Initial 2 spaces
         assert_eq!(ws_spans[0].0, 0..2);
@@ -413,15 +510,24 @@ mod tests {
     fn test_whitespace_font_loading() {
         let font_bytes = include_bytes!("../assets/ZeroWhitespace.ttf").to_vec();
         let mut db = cosmic_text::fontdb::Database::new();
-        let ids = db.load_font_source(cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(font_bytes)));
+        let ids = db.load_font_source(cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(
+            font_bytes,
+        )));
         assert!(!ids.is_empty(), "Font was loaded successfully");
         let face = db.face(ids[0]).expect("face exists");
         assert_eq!(face.families[0].0, "ZeroWhitespace");
 
         let mut font_system = cosmic_text::FontSystem::new_with_locale_and_db("en-US".into(), db);
-        let mut buffer = cosmic_text::Buffer::new(&mut font_system, cosmic_text::Metrics::new(14.0, 20.0));
+        let mut buffer =
+            cosmic_text::Buffer::new(&mut font_system, cosmic_text::Metrics::new(14.0, 20.0));
         let attrs = cosmic_text::Attrs::new().family(cosmic_text::Family::Name("ZeroWhitespace"));
-        buffer.set_text(&mut font_system, " \t ", &attrs, cosmic_text::Shaping::Advanced, None);
+        buffer.set_text(
+            &mut font_system,
+            " \t ",
+            &attrs,
+            cosmic_text::Shaping::Advanced,
+            None,
+        );
         buffer.shape_until_scroll(&mut font_system, false);
 
         let mut glyph_count = 0;
@@ -431,9 +537,16 @@ mod tests {
                 glyph_count += 1;
             }
         }
-        let mut buffer2 = cosmic_text::Buffer::new(&mut font_system, cosmic_text::Metrics::new(14.0, 20.0));
+        let mut buffer2 =
+            cosmic_text::Buffer::new(&mut font_system, cosmic_text::Metrics::new(14.0, 20.0));
         let attrs2 = cosmic_text::Attrs::new().family(cosmic_text::Family::Monospace);
-        buffer2.set_text(&mut font_system, "   ", &attrs2, cosmic_text::Shaping::Advanced, None);
+        buffer2.set_text(
+            &mut font_system,
+            "   ",
+            &attrs2,
+            cosmic_text::Shaping::Advanced,
+            None,
+        );
         buffer2.shape_until_scroll(&mut font_system, false);
         for run in buffer2.layout_runs() {
             for glyph in run.glyphs {
@@ -474,5 +587,18 @@ mod tests {
         }
         assert_eq!(byte_idx, line.len(), "All bytes accounted for");
     }
+    #[test]
+    fn search_matches_are_visible_while_search_input_has_focus() {
+        let mut h = NordHighlighter::new(&Settings {
+            token: "rs".into(),
+            show_whitespace: false,
+            search: Some(("println".into(), false, false)),
+        });
+        let spans: Vec<_> = h.highlight_line("    println!(\"hi\");").collect();
+        assert!(
+            spans
+                .iter()
+                .any(|(range, h)| *range == (4..11) && matches!(h, Highlight::SearchMatch))
+        );
+    }
 }
-
