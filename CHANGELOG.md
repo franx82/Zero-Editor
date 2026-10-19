@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0 — 2026-10-19
+
+- Add word wrapping, enabled by default, with `⌘⌥W` to toggle it.
+- Add horizontal scrolling when word wrapping is disabled; the viewport follows the cursor.
+
 ## 0.1.0 — 2026-10-16
 
 First downloadable release for macOS Apple Silicon.

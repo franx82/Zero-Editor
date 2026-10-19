@@ -6,7 +6,7 @@ Inspired by Zed's simplicity and Vim's editing workflow. No accounts, integrated
 
 ## Download
 
-Download **Zero-Editor-v0.1.0-macos-arm64.zip** from the [latest release](https://github.com/franx82/Zero-Editor/releases/latest),
+Download **Zero-Editor-v0.2.0-macos-arm64.zip** from the [latest release](https://github.com/franx82/Zero-Editor/releases/latest),
 extract it and move **Zero Editor.app** to Applications. This package targets **Apple Silicon**, with macOS 12 as its declared minimum.
 Only the current development Mac has been checked; older macOS versions have not been verified.
 
@@ -24,6 +24,7 @@ Release assets include a SHA-256 checksum file. Intel and universal builds are n
 - Literal/regex search, case sensitivity, wraparound and single/global replacement; regex replacements support `$1`, `$2`, etc.
 - Unicode-aware line:column navigation, undo/redo and line/block editing commands.
 - Line numbers, syntax highlighting, language selection, font zoom and optional whitespace markers.
+- Word wrapping by default; toggle it with `⌘⌥W`. With wrapping off, long lines scroll horizontally and follow the cursor.
 - Smart indentation, Tab/Shift+Tab and indentation-aware backspace.
 - UTF-8, UTF-16 LE/BE with or without BOM, and Windows-1252 fallback.
 
@@ -75,6 +76,7 @@ saving stops; explicitly convert it to UTF-8 from the palette before saving agai
 |---|---|
 | Command palette | `⌘⇧P` |
 | Toggle adjacent split | `⌘\` |
+| Toggle word wrap | `⌘⌥W` |
 | New tab | `⌘N` / `⌘T` |
 | Open file | `⌘O` |
 | Save / Save as | `⌘S` / `⌘⇧S` |
@@ -117,7 +119,7 @@ and atomic writes. The remaining modules cover search, commands, tabs, context m
 
 No LSP, multiple cursors, project explorer, macros or plugins. Undo history uses bounded in-memory snapshots
 and does not survive a restart. Search highlights render per line, while multiline regexes remain navigable
-and replaceable. There is no word wrap. External file changes are not detected before saving.
+and replaceable. External file changes are not detected before saving.
 
 ## License
 

@@ -295,6 +295,15 @@ impl Desktop {
             }
             EventMessage::Close(id) => self.request_close(id),
             EventMessage::Event(event, status, id) => match event {
+                Event::Window(window::Event::Resized(size)) => {
+                    if let Some(app) = self.windows.get_mut(&id) {
+                        app.window_width = size.width;
+                        app.sync_horizontal_cursor()
+                            .map(move |message| EventMessage::Window(id, message))
+                    } else {
+                        Task::none()
+                    }
+                }
                 Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => self
                     .dispatch(
                         id,

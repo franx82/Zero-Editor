@@ -16,8 +16,8 @@ mod typography;
 
 use commands::{COMMANDS, Command, LineCommand};
 use iced::widget::{
-    button, canvas, column, container, mouse_area, operation, pin, responsive, row, space, stack,
-    text, text_editor, text_input,
+    button, canvas, column, container, mouse_area, operation, pin, responsive, row, scrollable,
+    space, stack, text, text_editor, text_input,
 };
 use iced::{
     Alignment, Element, Length, Padding, Task,
@@ -41,6 +41,7 @@ struct App {
     active_tab: usize,
     highlight_enabled: bool,
     show_whitespace: bool,
+    word_wrap_enabled: bool,
     untitled_counter: usize,
     status_notification: Option<String>,
     panel: Panel,
@@ -48,6 +49,7 @@ struct App {
     panel_index: usize,
     search: search::Search,
     font_size: f32,
+    window_width: f32,
     close_confirmation: Option<String>,
     close_after_save: Option<String>,
     revision: u64,
@@ -98,6 +100,7 @@ enum Message {
     EditAt(String, text_editor::Action),
     ForTab(String, Box<Message>),
     ViewportAt(String, f32),
+    HorizontalScrollAt(String, f32),
     ScrollAt(String, usize),
     OpenEditorContext(String),
     ContextAction(context_menu::Action),
@@ -114,6 +117,20 @@ fn expand_tilde(path: PathBuf) -> PathBuf {
     path
 }
 
+fn visual_columns(text: &str) -> usize {
+    text.chars().fold(0, |column, character| {
+        if character == '\t' {
+            column + (4 - column % 4)
+        } else if character.is_control() {
+            column
+        } else if character.is_ascii() || character as u32 <= 0x2E7F {
+            column + 1
+        } else {
+            column + 2
+        }
+    })
+}
+
 impl App {
     fn from_tabs(tabs: Vec<Tab>, active_tab: usize, status_notification: Option<String>) -> Self {
         Self {
@@ -121,6 +138,7 @@ impl App {
             active_tab,
             highlight_enabled: true,
             show_whitespace: false,
+            word_wrap_enabled: true,
             untitled_counter: 0,
             status_notification,
             panel: Panel::None,
@@ -128,6 +146,7 @@ impl App {
             panel_index: 0,
             search: search::Search::default(),
             font_size: 15.0,
+            window_width: 1160.0,
             close_confirmation: None,
             close_after_save: None,
             revision: 0,
@@ -157,6 +176,67 @@ impl App {
     }
     fn replacement_id(&self) -> String {
         format!("replace-{}", self.ui_id)
+    }
+    fn horizontal_scroll_id(&self, id: &str) -> String {
+        format!("horizontal-{id}")
+    }
+    fn gutter_width(&self, index: usize) -> f32 {
+        (self.tabs[index].line_count().to_string().len().max(3) as f32 * self.font_size * 0.65
+            + 20.0)
+            .max(55.0)
+    }
+    fn editor_viewport_width(&self, index: usize, split: bool) -> f32 {
+        let pane_width = if split {
+            (self.window_width - 1.0).max(1.0) / 2.0
+        } else {
+            self.window_width
+        };
+        (pane_width - self.gutter_width(index) - 14.0).max(1.0)
+    }
+    fn sync_horizontal_cursor(&mut self) -> Task<Message> {
+        if self.word_wrap_enabled {
+            return Task::none();
+        }
+
+        let index = self.active_tab;
+        let split = self.split_pair().is_some();
+        let viewport_width = self.editor_viewport_width(index, split);
+        let font_size = self.font_size;
+        let scroll_id = self.horizontal_scroll_id(&self.tabs[index].id);
+        let tab = &mut self.tabs[index];
+        let cursor = tab.content.cursor().position;
+        let line = tab
+            .content
+            .line(cursor.line)
+            .map(|line| line.text.into_owned())
+            .unwrap_or_default();
+        let byte_column = cursor.column.min(line.len());
+        let byte_column = (0..=byte_column)
+            .rev()
+            .find(|offset| line.is_char_boundary(*offset))
+            .unwrap_or(0);
+        let cursor_x = 16.0 + visual_columns(&line[..byte_column]) as f32 * font_size * 0.602;
+        let current = tab.horizontal_offset;
+        let target = if cursor_x < current + 8.0 {
+            (cursor_x - 8.0).max(0.0)
+        } else if cursor_x > current + viewport_width - 24.0 {
+            (cursor_x - viewport_width + 24.0).max(0.0)
+        } else {
+            current
+        };
+
+        if (target - current).abs() > 0.5 {
+            tab.horizontal_offset = target;
+            operation::scroll_to(
+                scroll_id,
+                scrollable::AbsoluteOffset {
+                    x: Some(target),
+                    y: None,
+                },
+            )
+        } else {
+            Task::none()
+        }
     }
     fn focus_editor(&self) -> Task<Message> {
         operation::focus(self.editor_id(&self.tabs[self.active_tab].id))
@@ -322,7 +402,7 @@ impl App {
                 } else {
                     self.split_anchor = self.adjacent_split_anchor();
                 }
-                return self.focus_editor();
+                return Task::batch([self.focus_editor(), self.sync_horizontal_cursor()]);
             }
             Message::EditAt(id, action) => {
                 if let Some(index) = self.tabs.iter().position(|t| t.id == id) {
@@ -333,14 +413,16 @@ impl App {
                             self.active_tab = index;
                             self.refresh_search();
                         }
-                        return self.update(Message::Edit(action));
+                        let edit = self.update(Message::Edit(action));
+                        return Task::batch([edit, self.sync_horizontal_cursor()]);
                     }
                 }
             }
             Message::ForTab(id, message) => {
                 if let Some(index) = self.tabs.iter().position(|t| t.id == id) {
                     self.active_tab = index;
-                    return self.update(*message);
+                    let task = self.update(*message);
+                    return Task::batch([task, self.sync_horizontal_cursor()]);
                 }
             }
             Message::ViewportAt(id, height) => {
@@ -351,6 +433,11 @@ impl App {
             Message::ScrollAt(id, line) => {
                 if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
                     tab.scroll_to_line(line);
+                }
+            }
+            Message::HorizontalScrollAt(id, offset) => {
+                if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
+                    tab.horizontal_offset = offset;
                 }
             }
             Message::OpenEditorContext(id) => {
@@ -428,7 +515,7 @@ impl App {
                         ));
                     }
                 }
-                return self.focus_editor();
+                return Task::batch([self.focus_editor(), self.sync_horizontal_cursor()]);
             }
             Message::PasteText(id, text) => {
                 if let Some(text) = text {
@@ -543,7 +630,7 @@ impl App {
                     self.changed();
                     self.refresh_search();
                 }
-                return self.focus_editor();
+                return Task::batch([self.focus_editor(), self.sync_horizontal_cursor()]);
             }
             Message::NextTab => {
                 return self.update(Message::SelectTab((self.active_tab + 1) % self.tabs.len()));
@@ -635,6 +722,14 @@ impl App {
                         self.refresh_search();
                     }
                     Command::Split => return self.update(Message::ToggleSplit),
+                    Command::WordWrap => {
+                        self.word_wrap_enabled = !self.word_wrap_enabled;
+                        self.status_notification = Some(if self.word_wrap_enabled {
+                            "Word wrap enabled".into()
+                        } else {
+                            "Word wrap disabled".into()
+                        });
+                    }
                     Command::Highlight => self.highlight_enabled = !self.highlight_enabled,
                     Command::Whitespace => self.show_whitespace = !self.show_whitespace,
                     Command::Utf8 => {
@@ -649,7 +744,7 @@ impl App {
                     Command::ZoomOut => self.font_size = (self.font_size - 1.0).max(10.0),
                     Command::ZoomReset => self.font_size = 15.0,
                 }
-                return self.focus_editor();
+                return Task::batch([self.focus_editor(), self.sync_horizontal_cursor()]);
             }
             Message::OpenFileDialog => {
                 return Task::perform(
@@ -741,7 +836,7 @@ impl App {
                         self.tabs[self.active_tab].goto(line, col);
                         self.panel = Panel::None;
                         self.changed();
-                        return self.focus_editor();
+                        return Task::batch([self.focus_editor(), self.sync_horizontal_cursor()]);
                     }
                     self.status_notification =
                         Some("Enter a positive line number, such as 42 or 42:8".into());
@@ -766,20 +861,24 @@ impl App {
                 self.search.query = query;
                 self.refresh_search();
                 self.find(false);
+                return self.sync_horizontal_cursor();
             }
             Message::Replacement(value) => self.search.replacement = value,
             Message::FindNext(backwards) => {
                 self.find(backwards);
+                return self.sync_horizontal_cursor();
             }
             Message::ToggleCase => {
                 self.search.case_sensitive = !self.search.case_sensitive;
                 self.refresh_search();
                 self.find(false);
+                return self.sync_horizontal_cursor();
             }
             Message::ToggleRegex => {
                 self.search.regex = !self.search.regex;
                 self.refresh_search();
                 self.find(false);
+                return self.sync_horizontal_cursor();
             }
             Message::ReplaceOne => {
                 let tab = &mut self.tabs[self.active_tab];
@@ -795,6 +894,7 @@ impl App {
                 } else {
                     self.find(false);
                 }
+                return self.sync_horizontal_cursor();
             }
             Message::ReplaceAll => {
                 let tab = &mut self.tabs[self.active_tab];
@@ -806,6 +906,7 @@ impl App {
                     self.changed();
                     self.refresh_search();
                 }
+                return self.sync_horizontal_cursor();
             }
             Message::DismissNotification => self.status_notification = None,
         }
@@ -1043,14 +1144,25 @@ impl App {
     fn editor_view(&self, index: usize, split: bool) -> Element<'_, Message> {
         let tab = &self.tabs[index];
         let editor_id = tab.id.clone();
-        let editor = text_editor(&tab.content)
+        let viewport_width = self.editor_viewport_width(index, split);
+        let content_width = (0..tab.line_count())
+            .filter_map(|line| tab.content.line(line))
+            .map(|line| visual_columns(&line.text) as f32 * self.font_size * 0.602)
+            .fold(0.0_f32, f32::max)
+            + 32.0;
+        let editor_width = content_width.max(viewport_width);
+        let mut editor = text_editor(&tab.content)
             .id(self.editor_id(&tab.id))
             .font(typography::MONO)
             .size(self.font_size)
             .line_height(iced::widget::text::LineHeight::Absolute(
                 (self.font_size * 1.4).into(),
             ))
-            .wrapping(iced::widget::text::Wrapping::None)
+            .wrapping(if self.word_wrap_enabled {
+                iced::widget::text::Wrapping::WordOrGlyph
+            } else {
+                iced::widget::text::Wrapping::None
+            })
             .style(theme::editor_style)
             .highlight_with::<highlighter::NordHighlighter>(
                 highlighter::Settings {
@@ -1116,6 +1228,9 @@ impl App {
                 bottom: 10.0,
                 left: 16.0,
             });
+        if !self.word_wrap_enabled {
+            editor = editor.width(iced::Pixels(editor_width));
+        }
 
         let scroll_id = tab.id.clone();
         let viewport_id = tab.id.clone();
@@ -1136,10 +1251,7 @@ impl App {
             cursor: tab.cursor_position().0,
             font_size: self.font_size,
         })
-        .width(
-            (tab.line_count().to_string().len().max(3) as f32 * self.font_size * 0.65 + 20.0)
-                .max(55.0),
-        )
+        .width(self.gutter_width(index))
         .height(Length::Fill);
         let mut pane = column![].height(Length::Fill).width(Length::FillPortion(1));
         if split {
@@ -1157,7 +1269,22 @@ impl App {
                 .style(theme::header_container_style),
             );
         }
-        pane = pane.push(row![gutter, editor, scrollbar].height(Length::Fill));
+        if self.word_wrap_enabled {
+            pane = pane.push(row![editor].height(Length::Fill));
+        } else {
+            let scroll_tab_id = tab.id.clone();
+            let horizontal_editor = scrollable(editor)
+                .id(self.horizontal_scroll_id(&tab.id))
+                .direction(scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::new().width(8).scroller_width(8),
+                ))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .on_scroll(move |viewport| {
+                    Message::HorizontalScrollAt(scroll_tab_id.clone(), viewport.absolute_offset().x)
+                });
+            pane = pane.push(row![gutter, horizontal_editor, scrollbar].height(Length::Fill));
+        }
         mouse_area(pane)
             .on_right_press(Message::OpenEditorContext(tab.id.clone()))
             .into()
@@ -1343,6 +1470,7 @@ fn shortcut(key: &Key, m: keyboard::Modifiers, panel: Panel) -> Option<Message> 
             "s" => Message::Run(Command::Save),
             "o" => Message::Run(Command::Open),
             "n" | "t" => Message::Run(Command::New),
+            "w" if m.alt() => Message::Run(Command::WordWrap),
             "w" => Message::Run(Command::Close),
             "q" => Message::Quit,
             "\\" => Message::ToggleSplit,
