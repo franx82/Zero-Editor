@@ -1,6 +1,7 @@
 mod commands;
 mod context_menu;
 mod desktop;
+mod drag_edge;
 mod gutter;
 mod highlighter;
 #[cfg(target_os = "macos")]
@@ -13,6 +14,7 @@ mod tab;
 mod tab_bar;
 mod theme;
 mod typography;
+mod wheel_axis;
 
 use commands::{COMMANDS, Command, LineCommand};
 use iced::widget::{
@@ -47,6 +49,8 @@ struct App {
     panel: Panel,
     panel_query: String,
     panel_index: usize,
+    panel_first: usize,
+    panel_scroll: f32,
     search: search::Search,
     font_size: f32,
     window_width: f32,
@@ -81,6 +85,7 @@ enum Message {
     ClosePanel,
     PanelQuery(String),
     PanelStep(bool),
+    PanelScroll(iced::mouse::ScrollDelta),
     PanelSubmit,
     SelectLanguage(String),
     SearchQuery(String),
@@ -101,6 +106,7 @@ enum Message {
     ForTab(String, Box<Message>),
     ViewportAt(String, f32),
     HorizontalScrollAt(String, f32),
+    DragOutside(String, iced::Point, iced::Size),
     ScrollAt(String, usize),
     OpenEditorContext(String),
     ContextAction(context_menu::Action),
@@ -144,6 +150,8 @@ impl App {
             panel: Panel::None,
             panel_query: String::new(),
             panel_index: 0,
+            panel_first: 0,
+            panel_scroll: 0.0,
             search: search::Search::default(),
             font_size: 15.0,
             window_width: 1160.0,
@@ -193,7 +201,22 @@ impl App {
         };
         (pane_width - self.gutter_width(index) - 14.0).max(1.0)
     }
+    fn content_width(&self, index: usize) -> f32 {
+        let tab = &self.tabs[index];
+        (0..tab.line_count())
+            .filter_map(|line| tab.content.line(line))
+            .map(|line| {
+                visual_columns(&line.text) as f32 * self.font_size * typography::MONO_ADVANCE
+            })
+            .fold(0.0_f32, f32::max)
+            + 32.0
+    }
     fn sync_horizontal_cursor(&mut self) -> Task<Message> {
+        self.reveal_horizontal_cursor(4.0)
+    }
+    /// Scrolls only once the cursor comes within `margin` columns of an edge;
+    /// pointer actions pass zero so clicking never shifts the view.
+    fn reveal_horizontal_cursor(&mut self, margin: f32) -> Task<Message> {
         if self.word_wrap_enabled {
             return Task::none();
         }
@@ -215,12 +238,15 @@ impl App {
             .rev()
             .find(|offset| line.is_char_boundary(*offset))
             .unwrap_or(0);
-        let cursor_x = 16.0 + visual_columns(&line[..byte_column]) as f32 * font_size * 0.602;
+        let advance = font_size * typography::MONO_ADVANCE;
+        let cursor_x = 16.0 + visual_columns(&line[..byte_column]) as f32 * advance;
+        let margin = margin * advance;
         let current = tab.horizontal_offset;
-        let target = if cursor_x < current + 8.0 {
-            (cursor_x - 8.0).max(0.0)
-        } else if cursor_x > current + viewport_width - 24.0 {
-            (cursor_x - viewport_width + 24.0).max(0.0)
+        let target = if cursor_x < current + margin {
+            let target = cursor_x - margin;
+            if target < 16.0 + margin { 0.0 } else { target }
+        } else if cursor_x > current + viewport_width - margin - advance {
+            (cursor_x - viewport_width + margin + advance).max(0.0)
         } else {
             current
         };
@@ -413,8 +439,20 @@ impl App {
                             self.active_tab = index;
                             self.refresh_search();
                         }
+                        let pointer = matches!(
+                            action,
+                            text_editor::Action::Click(_)
+                                | text_editor::Action::Drag(_)
+                                | text_editor::Action::SelectWord
+                                | text_editor::Action::SelectLine
+                        );
                         let edit = self.update(Message::Edit(action));
-                        return Task::batch([edit, self.sync_horizontal_cursor()]);
+                        let reveal = if pointer {
+                            self.reveal_horizontal_cursor(0.0)
+                        } else {
+                            self.sync_horizontal_cursor()
+                        };
+                        return Task::batch([edit, reveal]);
                     }
                 }
             }
@@ -438,6 +476,35 @@ impl App {
             Message::HorizontalScrollAt(id, offset) => {
                 if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
                     tab.horizontal_offset = offset;
+                }
+            }
+            Message::DragOutside(id, pointer, size) => {
+                if let Some(index) = self.tabs.iter().position(|t| t.id == id) {
+                    // Scroll faster the further the pointer is past the edge.
+                    let overshoot = if pointer.x < 0.0 {
+                        pointer.x
+                    } else {
+                        pointer.x - size.width
+                    };
+                    let step = overshoot.signum() * (overshoot.abs() * 0.25).clamp(2.0, 40.0);
+                    let max = (self.content_width(index) - size.width).max(0.0);
+                    let scroll_id = self.horizontal_scroll_id(&id);
+                    self.active_tab = index;
+                    let tab = &mut self.tabs[index];
+                    let offset = (tab.horizontal_offset + step).clamp(0.0, max);
+                    tab.horizontal_offset = offset;
+                    tab.on_edit(text_editor::Action::Drag(iced::Point::new(
+                        pointer.x.clamp(0.0, size.width) + offset - 16.0,
+                        (pointer.y.clamp(0.0, size.height) - 10.0).max(0.0),
+                    )));
+                    self.changed();
+                    return operation::scroll_to(
+                        scroll_id,
+                        scrollable::AbsoluteOffset {
+                            x: Some(offset),
+                            y: None,
+                        },
+                    );
                 }
             }
             Message::OpenEditorContext(id) => {
@@ -786,6 +853,8 @@ impl App {
                         .position(|(token, _)| *token == self.tabs[self.active_tab].syntax_token())
                         .unwrap_or(0);
                 }
+                self.panel_first = self.panel_index.saturating_sub(PICKER_ROWS / 2);
+                self.panel_scroll = 0.0;
                 if matches!(panel, Panel::Find | Panel::Replace) {
                     if let Some(selection) = self.tabs[self.active_tab].content.selection()
                         && !selection.contains(['\n', '\r'])
@@ -810,6 +879,7 @@ impl App {
             Message::PanelQuery(query) => {
                 self.panel_query = query;
                 self.panel_index = 0;
+                self.panel_first = 0;
             }
             Message::PanelStep(backwards) => {
                 let count = self.panel_items().len();
@@ -819,7 +889,23 @@ impl App {
                     } else {
                         (self.panel_index + 1) % count
                     };
+                    self.panel_first = self.panel_first.clamp(
+                        self.panel_index.saturating_sub(PICKER_ROWS - 1),
+                        self.panel_index,
+                    );
                 }
+            }
+            Message::PanelScroll(delta) => {
+                // Trackpads report pixels: accumulate them into whole rows.
+                self.panel_scroll -= match delta {
+                    iced::mouse::ScrollDelta::Lines { y, .. } => y,
+                    iced::mouse::ScrollDelta::Pixels { y, .. } => y / PICKER_ROW_HEIGHT,
+                };
+                let rows = self.panel_scroll.trunc();
+                self.panel_scroll -= rows;
+                let last = self.panel_items().len().saturating_sub(PICKER_ROWS);
+                self.panel_first =
+                    (self.panel_first as f32 + rows).clamp(0.0, last as f32) as usize;
             }
             Message::PanelSubmit => {
                 if self.panel == Panel::Goto {
@@ -1145,12 +1231,7 @@ impl App {
         let tab = &self.tabs[index];
         let editor_id = tab.id.clone();
         let viewport_width = self.editor_viewport_width(index, split);
-        let content_width = (0..tab.line_count())
-            .filter_map(|line| tab.content.line(line))
-            .map(|line| visual_columns(&line.text) as f32 * self.font_size * 0.602)
-            .fold(0.0_f32, f32::max)
-            + 32.0;
-        let editor_width = content_width.max(viewport_width);
+        let editor_width = self.content_width(index).max(viewport_width);
         let mut editor = text_editor(&tab.content)
             .id(self.editor_id(&tab.id))
             .font(typography::MONO)
@@ -1273,7 +1354,8 @@ impl App {
             pane = pane.push(row![editor].height(Length::Fill));
         } else {
             let scroll_tab_id = tab.id.clone();
-            let horizontal_editor = scrollable(editor)
+            let drag_tab_id = tab.id.clone();
+            let horizontal_editor = scrollable(wheel_axis::wheel_axis(editor))
                 .id(self.horizontal_scroll_id(&tab.id))
                 .direction(scrollable::Direction::Horizontal(
                     scrollable::Scrollbar::new().width(8).scroller_width(8),
@@ -1282,6 +1364,10 @@ impl App {
                 .height(Length::Fill)
                 .on_scroll(move |viewport| {
                     Message::HorizontalScrollAt(scroll_tab_id.clone(), viewport.absolute_offset().x)
+                });
+            let horizontal_editor =
+                drag_edge::drag_edge(horizontal_editor, move |pointer, size| {
+                    Message::DragOutside(drag_tab_id.clone(), pointer, size)
                 });
             pane = pane.push(row![gutter, horizontal_editor, scrollbar].height(Length::Fill));
         }
@@ -1371,9 +1457,12 @@ impl App {
         let indices = self.panel_items();
         if self.panel != Panel::Goto {
             let mut items = column![].spacing(2);
-            // Keep the keyboard selection visible without a second scroll position.
-            let first = self.panel_index.saturating_sub(5);
-            for (position, &index) in indices.iter().enumerate().skip(first).take(11) {
+            for (position, &index) in indices
+                .iter()
+                .enumerate()
+                .skip(self.panel_first)
+                .take(PICKER_ROWS)
+            {
                 let (label, hint, message) = if self.panel == Panel::Palette {
                     let (command, label, hint) = COMMANDS[index];
                     (label, hint, Message::Run(command))
@@ -1405,11 +1494,13 @@ impl App {
             if indices.is_empty() {
                 items = items.push(text("No results").size(13).color(theme::TEXT_MUTED));
             }
-            content = content.push(items).push(
-                text("↑ ↓ select     ↵ run     esc close")
-                    .size(11)
-                    .color(theme::TEXT_MUTED),
-            );
+            content = content
+                .push(mouse_area(items).on_scroll(Message::PanelScroll))
+                .push(
+                    text("↑ ↓ select     ↵ run     esc close")
+                        .size(11)
+                        .color(theme::TEXT_MUTED),
+                );
         } else {
             content = content.push(
                 text("↵ go to position     esc cancel")
@@ -1424,6 +1515,11 @@ impl App {
             .into()
     }
 }
+
+/// Rows the command and language pickers show at once.
+const PICKER_ROWS: usize = 11;
+/// Height of one picker row: 13px label plus 8px vertical padding and 2px spacing.
+const PICKER_ROW_HEIGHT: f32 = 34.0;
 
 fn small_button(label: &str, message: Message) -> Element<'static, Message> {
     button(text(label.to_owned()).size(12))
@@ -1535,10 +1631,10 @@ fn main() -> iced::Result {
     .theme(iced::Theme::Dark)
     .default_font(typography::UI)
     .font(include_bytes!("../assets/ZeroWhitespace.ttf").as_slice())
-    .font(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf").as_slice())
-    .font(include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf").as_slice())
-    .font(include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf").as_slice())
-    .font(include_bytes!("../assets/fonts/JetBrainsMono-BoldItalic.ttf").as_slice())
+    .font(include_bytes!("../assets/fonts/MesloLGM-Regular.ttf").as_slice())
+    .font(include_bytes!("../assets/fonts/MesloLGM-Bold.ttf").as_slice())
+    .font(include_bytes!("../assets/fonts/MesloLGM-Italic.ttf").as_slice())
+    .font(include_bytes!("../assets/fonts/MesloLGM-BoldItalic.ttf").as_slice())
     .run()
 }
 

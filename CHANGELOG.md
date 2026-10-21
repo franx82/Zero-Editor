@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Switch the editor font to Meslo LG for rounder, less condensed glyphs.
+- Trackpad swipes and Shift+wheel now scroll horizontally when word wrapping is disabled.
+- Clicking no longer shifts the view; while typing the view keeps a few columns of margin.
+- Selection drags keep scrolling horizontally past the editor edge, even outside the window.
+- The command palette and language picker scroll with the mouse wheel and trackpad.
+
 ## 0.2.0 — 2026-10-19
 
 - Add word wrapping, enabled by default, with `⌘⌥W` to toggle it.

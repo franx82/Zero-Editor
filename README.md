@@ -15,7 +15,7 @@ Release assets include a SHA-256 checksum file. Intel and universal builds are n
 
 ## Features
 
-- English Nord interface, unified macOS titlebar, Helvetica Neue Medium UI and bundled JetBrains Mono editor fonts.
+- English Nord interface, unified macOS titlebar, Helvetica Neue Medium UI and bundled Meslo LG editor fonts.
 - Reorder tabs by dragging; detach them into native windows by dragging out of the bar.
 - New tabs from the inline `+`, double-clicking empty tab-bar space, or `⌘N` / `⌘T`.
 - Split with the next tab, or the previous tab when the current tab is last.
@@ -123,5 +123,5 @@ and replaceable. External file changes are not detected before saving.
 
 ## License
 
-[MIT](LICENSE) for code. [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) is distributed under
-the [SIL Open Font License 1.1](assets/fonts/OFL.txt).
+[MIT](LICENSE) for code. [Meslo LG](https://github.com/andreberg/Meslo-Font) is distributed under
+the [Apache License 2.0](assets/fonts/LICENSE-Meslo.txt).

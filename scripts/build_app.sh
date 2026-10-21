@@ -42,7 +42,7 @@ fi
 
 # Bundled font license (font data is embedded in the executable)
 mkdir -p "$RESOURCES_DIR/licenses"
-cp "$DIR/assets/fonts/OFL.txt" "$RESOURCES_DIR/licenses/JetBrainsMono-OFL.txt"
+cp "$DIR/assets/fonts/LICENSE-Meslo.txt" "$RESOURCES_DIR/licenses/Meslo-LICENSE.txt"
 cp "$DIR/LICENSE" "$RESOURCES_DIR/licenses/ZeroEditor-MIT.txt"
 
 # Create Info.plist
