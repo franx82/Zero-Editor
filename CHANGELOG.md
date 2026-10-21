@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-10-21
 
 - Switch the editor font to Meslo LG for rounder, less condensed glyphs.
 - Trackpad swipes and Shift+wheel now scroll horizontally when word wrapping is disabled.
