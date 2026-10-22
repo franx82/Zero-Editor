@@ -1,60 +1,92 @@
 #!/usr/bin/env python3
 """
-Generates assets/icon.png and assets/icon.icns from the high-res icon source.
-Produces a pixel-perfect, native macOS HIG squircle icon with retina resolutions.
+Generates assets/icon.png and assets/icon.icns by drawing the "Frost bands" icon:
+a slashed zero filled with Nord frost bands on a Polar Night squircle.
+Everything is drawn on the 1024 macOS icon grid (824px squircle) at 4x and downsampled.
 """
 
+import math
 import os
+import shutil
 import subprocess
 from PIL import Image, ImageDraw, ImageFilter
+
+SCALE = 4
+SIZE = 1024 * SCALE
+
+NORD0 = (46, 52, 64, 255)
+FROST = [
+    (143, 188, 187, 255),  # nord7
+    (136, 192, 208, 255),  # nord8
+    (129, 161, 193, 255),  # nord9
+    (94, 129, 172, 255),   # nord10
+]
+
+
+def s(v):
+    return v * SCALE
+
+
+def squircle_mask(x0, y0, size, exponent=5.0, steps=2048):
+    """Superellipse mask approximating the macOS continuous-corner icon shape."""
+    mask = Image.new("L", (SIZE, SIZE), 0)
+    r = size / 2
+    cx, cy = x0 + r, y0 + r
+    points = []
+    for i in range(steps):
+        t = 2 * math.pi * i / steps
+        c, sn = math.cos(t), math.sin(t)
+        points.append((
+            s(cx + r * math.copysign(abs(c) ** (2 / exponent), c)),
+            s(cy + r * math.copysign(abs(sn) ** (2 / exponent), sn)),
+        ))
+    ImageDraw.Draw(mask).polygon(points, fill=255)
+    return mask
+
+
+def stadium(draw, x, y, w, h, fill):
+    draw.rounded_rectangle([s(x), s(y), s(x + w), s(y + h)], radius=s(min(w, h) / 2), fill=fill)
+
+
+def draw_icon():
+    face = Image.new("RGBA", (SIZE, SIZE), NORD0)
+
+    # Frost bands clipped to the outer zero
+    bands = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(bands)
+    edges = [232, 370, 510, 650, 792]
+    for color, top, bottom in zip(FROST, edges, edges[1:]):
+        bd.rectangle([s(300), s(top), s(724), s(bottom)], fill=color)
+    zero = Image.new("L", (SIZE, SIZE), 0)
+    stadium(ImageDraw.Draw(zero), 312, 232, 400, 560, 255)
+    face.paste(bands, (0, 0), zero)
+
+    # Counter and slash cut out in the background colour
+    fd = ImageDraw.Draw(face)
+    stadium(fd, 408, 328, 208, 368, NORD0)
+    (x1, y1), (x2, y2), width = (372, 760), (652, 264), 44
+    fd.line([s(x1), s(y1), s(x2), s(y2)], fill=NORD0, width=s(width))
+    for x, y in ((x1, y1), (x2, y2)):
+        fd.ellipse([s(x - width / 2), s(y - width / 2), s(x + width / 2), s(y + width / 2)], fill=NORD0)
+
+    # Squircle with a soft drop shadow
+    mask = squircle_mask(100, 100, 824)
+    shadow_mask = squircle_mask(100, 110, 824).point(lambda a: a * 140 // 255)
+    shadow = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 120))
+    shadow.putalpha(shadow_mask.filter(ImageFilter.GaussianBlur(s(18))))
+
+    canvas = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
+    canvas.alpha_composite(shadow)
+    canvas.paste(face, (0, 0), mask)
+    return canvas.resize((1024, 1024), Image.Resampling.LANCZOS)
+
 
 def main():
     root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     assets_dir = os.path.join(root_dir, "assets")
     os.makedirs(assets_dir, exist_ok=True)
 
-    src_path = "/Users/fippoliti/.gemini/antigravity/brain/35d751e3-802c-4d37-a4ff-9292c8216b4e/zero_editor_icon_1791895118299.jpg"
-    if not os.path.exists(src_path):
-        src_path = os.path.join(assets_dir, "icon.png")
-
-    img = Image.open(src_path).convert("RGBA")
-
-    # Crop squircle
-    box = (130, 130, 894, 894)
-    cropped = img.crop(box)
-
-    # Scale squircle to standard macOS HIG grid (824x824 on 1024x1024)
-    target_size = 824
-    squircle = cropped.resize((target_size, target_size), Image.Resampling.LANCZOS)
-
-    # Smooth squircle mask (continuous curvature corner radius ~185)
-    mask = Image.new("L", (target_size, target_size), 0)
-    draw = ImageDraw.Draw(mask)
-    radius = 185
-    draw.rounded_rectangle([(0, 0), (target_size, target_size)], radius=radius, fill=255)
-
-    masked_squircle = Image.new("RGBA", (target_size, target_size), (0, 0, 0, 0))
-    masked_squircle.paste(squircle, (0, 0), mask)
-
-    # 1024x1024 Canvas with soft drop shadow
-    canvas = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
-    offset_x = (1024 - target_size) // 2
-    offset_y = (1024 - target_size) // 2 + 10
-
-    shadow = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
-    shadow_mask = Image.new("L", (1024, 1024), 0)
-    shadow_draw = ImageDraw.Draw(shadow_mask)
-    shadow_draw.rounded_rectangle(
-        [(offset_x, offset_y), (offset_x + target_size, offset_y + target_size)],
-        radius=radius,
-        fill=140
-    )
-    shadow_blur = shadow_mask.filter(ImageFilter.GaussianBlur(18))
-    shadow.paste((0, 0, 0, 120), (0, 0), shadow_blur)
-
-    canvas.paste(shadow, (0, 0), shadow)
-    canvas.paste(masked_squircle, (offset_x, offset_y - 10), masked_squircle)
-
+    canvas = draw_icon()
     png_path = os.path.join(assets_dir, "icon.png")
     canvas.save(png_path)
     print(f"Saved {png_path}")
@@ -76,18 +108,15 @@ def main():
         ("icon_512x512@2x.png", 1024),
     ]
 
-    for filename, s in sizes:
-        resized = canvas.resize((s, s), Image.Resampling.LANCZOS)
-        resized.save(os.path.join(iconset_dir, filename))
+    for filename, size in sizes:
+        canvas.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(iconset_dir, filename))
 
     icns_path = os.path.join(assets_dir, "icon.icns")
     subprocess.run(["iconutil", "-c", "icns", iconset_dir, "-o", icns_path], check=True)
     print(f"Generated {icns_path} ({os.path.getsize(icns_path)} bytes)")
 
-    # Cleanup temporary iconset
-    for f in os.listdir(iconset_dir):
-        os.remove(os.path.join(iconset_dir, f))
-    os.rmdir(iconset_dir)
+    shutil.rmtree(iconset_dir)
+
 
 if __name__ == "__main__":
     main()
