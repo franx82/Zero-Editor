@@ -15,13 +15,14 @@ Release assets include a SHA-256 checksum file. Intel and universal builds are n
 
 ## Features
 
-- English Nord interface, unified macOS titlebar, Helvetica Neue Medium UI and bundled Meslo LG editor fonts.
-- Reorder tabs by dragging; detach them into native windows by dragging out of the bar.
+- Flat Nord interface with the tab bar as the macOS titlebar, Helvetica Neue Medium UI and bundled Meslo LG editor fonts.
+- Native menu bar (File, Edit, View, Go, Window) listing every command and its shortcut, with Open Recent.
+- Reorder tabs by dragging; drag a tab out of the bar into a new window, or onto another window to move it there.
 - New tabs from the inline `+`, double-clicking empty tab-bar space, or `⌘N` / `⌘T`.
 - Split with the next tab, or the previous tab when the current tab is last.
 - Finder, drag-and-drop and command-line file opening, with immediate editor focus.
-- Searchable command palette, context menus and popups that close when clicked outside.
-- Literal/regex search, case sensitivity, wraparound and single/global replacement; regex replacements support `$1`, `$2`, etc.
+- Searchable command palette showing the on/off state of toggles, context menus and popups that close when clicked outside.
+- Non-modal find bar: the document stays editable while it is open. Literal/regex search, case sensitivity, wraparound and single/global replacement; regex replacements support `$1`, `$2`, etc.
 - Unicode-aware line:column navigation, undo/redo and line/block editing commands.
 - Line numbers, syntax highlighting, language selection, font zoom and optional whitespace markers.
 - Word wrapping by default; toggle it with `⌘⌥W`. With wrapping off, long lines scroll horizontally and follow the cursor.
@@ -33,14 +34,16 @@ See the [roadmap](docs/ROADMAP.md).
 
 ## Tabs and windows
 
-Drag a tab along the bar to reorder it, or vertically outside the bar to move it into a new native window.
-The context menu offers the same action. Middle-click closes a tab.
+Drag a tab along the bar to reorder it. Drop it outside the bar to move it into a new native window, or on
+another window to move it there; a window left without tabs closes. The context menu and File menu offer
+**Move Tab to New Window**. Middle-click closes a tab.
 
 The split icon (`⌘\`) pairs the current tab with its immediate right neighbor. On the last tab, it pairs
 with the previous tab, preserving tab order. Activate it again to return to one pane. Editing either pane
 keeps the pair visible; selecting a tab outside the pair updates the split. A single tab does not split.
 
-The status bar shows the document path, language, encoding and cursor position.
+The status bar shows the document path, language, encoding, cursor position and selection length.
+Confirmations such as saves appear there briefly; problems that need action stay in a banner.
 Whitespace markers are available from the command palette or `⌘.`.
 
 ## Document recovery
@@ -64,8 +67,10 @@ A second process can edit files but cannot archive drafts into the locked sessio
 
 All windows share one session writer. Detaching preserves the buffer, cursor and undo history. Closing
 a window retains its documents for the next launch; close individual tabs to remove them from the session.
-Recovered documents reopen in **one window**. Window geometry and split layouts are not persisted, and
-dragging tabs between existing windows is not supported.
+Recovered documents reopen in **one window**. Window geometry and split layouts are not persisted.
+
+Text size, word wrap, whitespace markers and syntax highlighting apply to every window and are kept in
+`settings.json` in the same folder.
 
 Malformed Unicode with a BOM is rejected. If a Windows-1252 document contains unrepresentable characters,
 saving stops; explicitly convert it to UTF-8 from the palette before saving again.
@@ -80,7 +85,7 @@ saving stops; explicitly convert it to UTF-8 from the palette before saving agai
 | New tab | `⌘N` / `⌘T` |
 | Open file | `⌘O` |
 | Save / Save as | `⌘S` / `⌘⇧S` |
-| Close tab / Quit | `⌘W` / `⌘Q` |
+| Close tab / window / Quit | `⌘W` / `⌘⇧W` / `⌘Q` |
 | Find / Find and replace | `⌘F` / `⌘⌥F` |
 | Next / previous match | `⌘G` / `⌘⇧G` |
 | Go to line:column | `⌃G` |

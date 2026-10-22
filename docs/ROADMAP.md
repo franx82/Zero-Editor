@@ -20,6 +20,6 @@ Accounts, integrated AI, telemetry and cloud services are outside the product's 
 1. Text engine: incremental buffers and operation-based history for large documents, explicit horizontal scrolling and performance profiling.
 2. Optional Vim mode: Normal/Insert/Visual, counts, motions, operators, text objects, registers, repeat with `.` and macros. Direct editing remains available.
 3. Projects: open folders, quick open, file search, recent files and external-change detection before overwriting.
-4. Advanced editing: multiple cursors, bracket matching, comments, persistent window/split layouts, dragging between existing windows and configurable keymaps/indentation.
+4. Advanced editing: multiple cursors, bracket matching, comments, persistent window/split layouts and configurable keymaps/indentation.
 5. Local language support: optional LSP, diagnostics, symbols, rename and formatting.
 6. Distribution: Developer ID signing, notarization, Intel/universal packages and compatibility checks on older macOS releases.

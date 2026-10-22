@@ -1,8 +1,8 @@
 //! Line numbers share the editor's font metrics and vertical origin.
 use crate::theme;
 use iced::{
-    Color, Point, Rectangle, Renderer, Theme, alignment, mouse,
-    widget::canvas::{self, Frame, Geometry, Path, Program},
+    Point, Rectangle, Renderer, Theme, alignment, mouse,
+    widget::canvas::{self, Frame, Geometry, Program},
 };
 
 pub struct Gutter {
@@ -12,6 +12,12 @@ pub struct Gutter {
     pub cursor: usize,
     pub font_size: f32,
 }
+impl Gutter {
+    fn line_height(&self) -> f32 {
+        self.font_size * 1.4
+    }
+}
+
 impl<Message> Program<Message> for Gutter {
     type State = ();
     fn draw(
@@ -23,62 +29,86 @@ impl<Message> Program<Message> for Gutter {
         _: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            iced::Size::new(bounds.width, 10.0),
-            theme::BG_EDITOR,
-        );
-        frame.fill_rectangle(
-            Point::new(0.0, (bounds.height - 10.0).max(0.0)),
-            iced::Size::new(bounds.width, 10.0),
-            theme::BG_EDITOR,
-        );
-        let height = self.font_size * 1.4;
-        let visible = ((bounds.height - 20.0 + self.offset) / height)
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), theme::BG_EDITOR);
+        let height = self.line_height();
+        let visible = ((bounds.height - 2.0 * PADDING + self.offset) / height)
             .ceil()
             .max(1.0) as usize;
         frame.with_clip(
             Rectangle::new(
-                Point::new(0.0, 10.0),
-                iced::Size::new(bounds.width, (bounds.height - 20.0).max(0.0)),
+                Point::new(0.0, PADDING),
+                iced::Size::new(bounds.width, (bounds.height - 2.0 * PADDING).max(0.0)),
             ),
             |frame| {
-                frame.fill_rectangle(Point::ORIGIN, bounds.size(), theme::BG_EDITOR);
                 for (index, line) in (self.top..self.total).take(visible).enumerate() {
-                    let y = 10.0 + index as f32 * height - self.offset;
-                    if line == self.cursor {
+                    let y = PADDING + index as f32 * height - self.offset;
+                    let current = line == self.cursor;
+                    if current {
                         frame.fill_rectangle(
                             Point::new(0.0, y),
                             iced::Size::new(bounds.width, height),
-                            Color::from_rgba(0.53, 0.75, 0.82, 0.06),
+                            theme::BG_CURRENT_LINE,
                         );
                     }
                     frame.fill_text(canvas::Text {
                         content: (line + 1).to_string(),
-                        position: Point::new(bounds.width - 10.0, y),
-                        size: self.font_size.into(),
-                        font: crate::typography::UI,
-                        color: if line == self.cursor {
-                            theme::TEXT_PRIMARY
+                        position: Point::new(bounds.width - 12.0, y + height / 2.0),
+                        size: (self.font_size * 0.9).into(),
+                        font: crate::typography::MONO,
+                        color: if current {
+                            theme::TEXT_SECONDARY
                         } else {
-                            theme::TEXT_MUTED
+                            theme::TEXT_FAINT
                         },
                         align_x: alignment::Horizontal::Right.into(),
-                        align_y: alignment::Vertical::Top,
+                        align_y: alignment::Vertical::Center,
                         ..Default::default()
                     });
                 }
             },
         );
-        frame.stroke(
-            &Path::line(
-                Point::new(bounds.width - 1.0, 0.0),
-                Point::new(bounds.width - 1.0, bounds.height),
-            ),
-            canvas::Stroke::default()
-                .with_color(theme::BORDER_COLOR)
-                .with_width(1.0),
-        );
+        vec![frame.into_geometry()]
+    }
+}
+
+/// Editor padding above the first and below the last line.
+const PADDING: f32 = 10.0;
+
+/// Current-line band painted beneath the text, aligned with the gutter rows.
+pub struct LineBand {
+    pub top: usize,
+    pub offset: f32,
+    pub cursor: usize,
+    pub font_size: f32,
+}
+impl<Message> Program<Message> for LineBand {
+    type State = ();
+    fn draw(
+        &self,
+        _: &(),
+        renderer: &Renderer,
+        _: &Theme,
+        bounds: Rectangle,
+        _: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let height = self.font_size * 1.4;
+        if self.cursor >= self.top {
+            let y = PADDING + (self.cursor - self.top) as f32 * height - self.offset;
+            frame.with_clip(
+                Rectangle::new(
+                    Point::new(0.0, PADDING),
+                    iced::Size::new(bounds.width, (bounds.height - 2.0 * PADDING).max(0.0)),
+                ),
+                |frame| {
+                    frame.fill_rectangle(
+                        Point::new(0.0, y),
+                        iced::Size::new(bounds.width, height),
+                        theme::BG_CURRENT_LINE,
+                    );
+                },
+            );
+        }
         vec![frame.into_geometry()]
     }
 }

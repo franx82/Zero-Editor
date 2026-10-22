@@ -80,20 +80,18 @@ pub fn view(menu: &Menu, tab: &crate::Tab, has_neighbor: bool) -> Element<'stati
         content = content.push(
             button(
                 row![
-                    text(label).size(13).width(Length::Fill),
-                    text(hint).size(11).color(theme::TEXT_MUTED)
+                    text(label).size(theme::TEXT_MD).width(Length::Fill),
+                    text(hint).size(theme::TEXT_XS).color(theme::TEXT_MUTED)
                 ]
                 .spacing(12),
             )
             .on_press_maybe(enabled.then_some(Message::ContextAction(action)))
             .padding([8, 10])
             .width(Length::Fill)
-            .style(move |theme, status| {
-                if selected && enabled {
-                    theme::tab_button_style(true)(theme, status)
-                } else {
-                    theme::picker_item_style(theme, status)
-                }
+            .style(if selected && enabled {
+                theme::selected_item_style
+            } else {
+                theme::picker_item_style
             }),
         );
     }

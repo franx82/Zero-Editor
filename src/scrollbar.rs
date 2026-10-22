@@ -218,38 +218,30 @@ impl<Message: Clone> Program<Message> for Scrollbar<Message> {
         let is_hovered = cursor.is_over(bounds) || state.is_dragging;
         let max_scroll = self.max_scroll(track_height);
 
-        // 1. Draw track background (always visible)
+        // The track is the editor surface; only the thumb is drawn, and it widens on hover.
         frame.fill_rectangle(
             Point::ORIGIN,
             Size::new(track_width, track_height),
-            theme::BG_TAB_INACTIVE,
+            theme::BG_EDITOR,
         );
 
-        // 2. Draw left border separator
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            Size::new(1.0, track_height),
-            Color::from_rgba(0.298, 0.337, 0.416, 0.4), // BORDER_COLOR
-        );
-
-        // 3. Compute and draw thumb only if content overflows visible area
         if max_scroll > 0 {
             let (thumb_y, thumb_height) = self.thumb_geometry(track_height);
-            let thumb_width = (track_width - 4.0).max(4.0);
-            let thumb_x = (track_width - thumb_width) / 2.0;
+            let thumb_width = if is_hovered { 8.0 } else { 6.0 };
+            let thumb_x = track_width - thumb_width - 3.0;
 
             let thumb_color = if state.is_dragging {
-                theme::NORD8_FROST_ICE
+                Color::from_rgba(0.847, 0.871, 0.914, 0.38)
             } else if is_hovered {
-                theme::NORD9_FROST_BLUE
+                Color::from_rgba(0.847, 0.871, 0.914, 0.26)
             } else {
-                Color::from_rgba(0.482, 0.533, 0.631, 0.65) // Nord3 polar muted
+                Color::from_rgba(0.847, 0.871, 0.914, 0.14)
             };
 
             let thumb_path = Path::rounded_rectangle(
-                Point::new(thumb_x, thumb_y),
-                Size::new(thumb_width, thumb_height),
-                border::Radius::from(3.0),
+                Point::new(thumb_x, thumb_y + 2.0),
+                Size::new(thumb_width, (thumb_height - 4.0).max(thumb_width)),
+                border::Radius::from(thumb_width / 2.0),
             );
             frame.fill(&thumb_path, thumb_color);
         }

@@ -6,6 +6,8 @@ mod gutter;
 mod highlighter;
 #[cfg(target_os = "macos")]
 mod macos;
+mod menu;
+mod prefs;
 mod scrollbar;
 mod search;
 mod session;
@@ -41,18 +43,18 @@ enum Panel {
 struct App {
     tabs: Vec<Tab>,
     active_tab: usize,
-    highlight_enabled: bool,
-    show_whitespace: bool,
-    word_wrap_enabled: bool,
+    prefs: prefs::Prefs,
     untitled_counter: usize,
+    /// Persistent message for problems the user must act on.
     status_notification: Option<String>,
+    /// Short confirmation shown in the status bar, cleared after `TOAST_DURATION`.
+    toast: Option<(String, std::time::Instant)>,
     panel: Panel,
     panel_query: String,
     panel_index: usize,
     panel_first: usize,
     panel_scroll: f32,
     search: search::Search,
-    font_size: f32,
     window_width: f32,
     close_confirmation: Option<String>,
     close_after_save: Option<String>,
@@ -101,7 +103,10 @@ enum Message {
     DismissNotification,
     Tabs(tab_bar::Intent),
     ToggleSplit,
-    DetachTab(String),
+    /// Tab id and, when dragged, the drop point relative to the window.
+    DetachTab(String, Option<iced::Point>),
+    DragWindow,
+    CloseWindow,
     EditAt(String, text_editor::Action),
     ForTab(String, Box<Message>),
     ViewportAt(String, f32),
@@ -110,6 +115,8 @@ enum Message {
     ScrollAt(String, usize),
     OpenEditorContext(String),
     ContextAction(context_menu::Action),
+    /// Clipboard and selection actions chosen from the menu bar.
+    EditMenu(context_menu::Action),
     PasteText(String, Option<String>),
     FocusSearchInput(bool),
 }
@@ -142,18 +149,16 @@ impl App {
         Self {
             tabs,
             active_tab,
-            highlight_enabled: true,
-            show_whitespace: false,
-            word_wrap_enabled: true,
+            prefs: prefs::Prefs::default(),
             untitled_counter: 0,
             status_notification,
+            toast: None,
             panel: Panel::None,
             panel_query: String::new(),
             panel_index: 0,
             panel_first: 0,
             panel_scroll: 0.0,
             search: search::Search::default(),
-            font_size: 15.0,
             window_width: 1160.0,
             close_confirmation: None,
             close_after_save: None,
@@ -189,7 +194,9 @@ impl App {
         format!("horizontal-{id}")
     }
     fn gutter_width(&self, index: usize) -> f32 {
-        (self.tabs[index].line_count().to_string().len().max(3) as f32 * self.font_size * 0.65
+        (self.tabs[index].line_count().to_string().len().max(3) as f32
+            * self.prefs.font_size
+            * 0.65
             + 20.0)
             .max(55.0)
     }
@@ -206,7 +213,7 @@ impl App {
         (0..tab.line_count())
             .filter_map(|line| tab.content.line(line))
             .map(|line| {
-                visual_columns(&line.text) as f32 * self.font_size * typography::MONO_ADVANCE
+                visual_columns(&line.text) as f32 * self.prefs.font_size * typography::MONO_ADVANCE
             })
             .fold(0.0_f32, f32::max)
             + 32.0
@@ -217,14 +224,14 @@ impl App {
     /// Scrolls only once the cursor comes within `margin` columns of an edge;
     /// pointer actions pass zero so clicking never shifts the view.
     fn reveal_horizontal_cursor(&mut self, margin: f32) -> Task<Message> {
-        if self.word_wrap_enabled {
+        if self.prefs.word_wrap {
             return Task::none();
         }
 
         let index = self.active_tab;
         let split = self.split_pair().is_some();
         let viewport_width = self.editor_viewport_width(index, split);
-        let font_size = self.font_size;
+        let font_size = self.prefs.font_size;
         let scroll_id = self.horizontal_scroll_id(&self.tabs[index].id);
         let tab = &mut self.tabs[index];
         let cursor = tab.content.cursor().position;
@@ -310,6 +317,20 @@ impl App {
         self.revision += 1;
     }
 
+    fn notify(&mut self, message: impl Into<String>) {
+        self.toast = Some((message.into(), std::time::Instant::now()));
+    }
+
+    fn expire_toast(&mut self) {
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= TOAST_DURATION)
+        {
+            self.toast = None;
+        }
+    }
+
     fn refresh_search(&mut self) {
         self.search
             .refresh(&self.tabs[self.active_tab].content.text());
@@ -354,7 +375,12 @@ impl App {
         };
         match result {
             Ok(()) => {
-                self.status_notification = Some("File saved".into());
+                #[cfg(target_os = "macos")]
+                if let Some(path) = &self.tabs[index].path {
+                    macos::note_recent(path);
+                }
+                let title = self.tabs[index].title.clone();
+                self.notify(format!("Saved {title}"));
                 if self.close_after_save.as_deref() == Some(&id) {
                     self.remove_tab(index);
                     self.close_after_save = None;
@@ -379,7 +405,10 @@ impl App {
                     Intent::New => return self.update(Message::Run(Command::New)),
                     Intent::Split => return self.update(Message::ToggleSplit),
                     Intent::Palette => return self.update(Message::ShowPanel(Panel::Palette)),
-                    Intent::Detach(id) => return Task::done(Message::DetachTab(id)),
+                    Intent::Detach(id, point) => {
+                        return Task::done(Message::DetachTab(id, Some(point)));
+                    }
+                    Intent::DragWindow => return Task::done(Message::DragWindow),
                     Intent::Reorder { id, slot } => {
                         if let Some(from) = self.tabs.iter().position(|t| t.id == id) {
                             let active = self.tabs[self.active_tab].id.clone();
@@ -465,7 +494,7 @@ impl App {
             }
             Message::ViewportAt(id, height) => {
                 if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
-                    tab.set_viewport(height, self.font_size * 1.4);
+                    tab.set_viewport(height, self.prefs.font_size * 1.4);
                 }
             }
             Message::ScrollAt(id, line) => {
@@ -579,10 +608,19 @@ impl App {
                     Action::Detach => {
                         return Task::done(Message::DetachTab(
                             self.tabs[self.active_tab].id.clone(),
+                            None,
                         ));
                     }
                 }
                 return Task::batch([self.focus_editor(), self.sync_horizontal_cursor()]);
+            }
+            Message::EditMenu(action) => {
+                self.context = Some(context_menu::Menu {
+                    target: context_menu::Target::Editor(self.tabs[self.active_tab].id.clone()),
+                    position: iced::Point::ORIGIN,
+                    selected: None,
+                });
+                return self.update(Message::ContextAction(action));
             }
             Message::PasteText(id, text) => {
                 if let Some(text) = text {
@@ -662,7 +700,8 @@ impl App {
                     return self.update(message);
                 }
             }
-            Message::Quit | Message::DetachTab(_) => {}
+            Message::Quit | Message::DetachTab(..) | Message::DragWindow | Message::CloseWindow => {
+            }
             Message::Edit(action) => {
                 let edit = action.is_edit();
                 self.tabs[self.active_tab].on_edit(action);
@@ -790,26 +829,50 @@ impl App {
                     }
                     Command::Split => return self.update(Message::ToggleSplit),
                     Command::WordWrap => {
-                        self.word_wrap_enabled = !self.word_wrap_enabled;
-                        self.status_notification = Some(if self.word_wrap_enabled {
-                            "Word wrap enabled".into()
+                        self.prefs.word_wrap = !self.prefs.word_wrap;
+                        self.notify(if self.prefs.word_wrap {
+                            "Word wrap on"
                         } else {
-                            "Word wrap disabled".into()
+                            "Word wrap off"
                         });
                     }
-                    Command::Highlight => self.highlight_enabled = !self.highlight_enabled,
-                    Command::Whitespace => self.show_whitespace = !self.show_whitespace,
+                    Command::Highlight => {
+                        self.prefs.highlight = !self.prefs.highlight;
+                        self.notify(if self.prefs.highlight {
+                            "Syntax highlighting on"
+                        } else {
+                            "Syntax highlighting off"
+                        });
+                    }
+                    Command::Whitespace => {
+                        self.prefs.show_whitespace = !self.prefs.show_whitespace;
+                        self.notify(if self.prefs.show_whitespace {
+                            "Whitespace markers on"
+                        } else {
+                            "Whitespace markers off"
+                        });
+                    }
                     Command::Utf8 => {
                         self.tabs[self.active_tab].encoding =
                             tab::FileEncoding::Utf8 { bom: false };
                         self.tabs[self.active_tab].is_dirty = true;
                         self.changed();
-                        self.status_notification =
-                            Some("Document converted to UTF-8; press ⌘S to save".into());
+                        self.notify("Converted to UTF-8 — save to apply");
                     }
-                    Command::ZoomIn => self.font_size = (self.font_size + 1.0).min(32.0),
-                    Command::ZoomOut => self.font_size = (self.font_size - 1.0).max(10.0),
-                    Command::ZoomReset => self.font_size = 15.0,
+                    Command::ZoomIn => {
+                        self.prefs.font_size =
+                            (self.prefs.font_size + 1.0).min(prefs::MAX_FONT_SIZE);
+                        self.notify(format!("Text size {}", self.prefs.font_size));
+                    }
+                    Command::ZoomOut => {
+                        self.prefs.font_size =
+                            (self.prefs.font_size - 1.0).max(prefs::MIN_FONT_SIZE);
+                        self.notify(format!("Text size {}", self.prefs.font_size));
+                    }
+                    Command::ZoomReset => {
+                        self.prefs.font_size = prefs::DEFAULT_FONT_SIZE;
+                        self.notify(format!("Text size {}", self.prefs.font_size));
+                    }
                 }
                 return Task::batch([self.focus_editor(), self.sync_horizontal_cursor()]);
             }
@@ -843,6 +906,7 @@ impl App {
                 return self.focus_editor();
             }
             Message::ShowPanel(panel) => {
+                let was_searching = matches!(self.panel, Panel::Find | Panel::Replace);
                 self.context = None;
                 self.panel = panel;
                 self.panel_query.clear();
@@ -856,7 +920,10 @@ impl App {
                 self.panel_first = self.panel_index.saturating_sub(PICKER_ROWS / 2);
                 self.panel_scroll = 0.0;
                 if matches!(panel, Panel::Find | Panel::Replace) {
+                    // Switching between find and replace keeps the query as typed;
+                    // the selection is then just the current match.
                     if let Some(selection) = self.tabs[self.active_tab].content.selection()
+                        && !was_searching
                         && !selection.contains(['\n', '\r'])
                     {
                         self.search.query = selection;
@@ -1012,6 +1079,10 @@ impl App {
         }
         match Tab::from_file(path) {
             Ok(tab) => {
+                #[cfg(target_os = "macos")]
+                if let Some(path) = &tab.path {
+                    macos::note_recent(path);
+                }
                 self.split_anchor = None;
                 if self.tabs.len() == 1
                     && self.tabs[0].path.is_none()
@@ -1029,6 +1100,35 @@ impl App {
                 self.refresh_search();
             }
             Err(e) => self.status_notification = Some(format!("Could not open file: {e}")),
+        }
+    }
+
+    /// On/off state shown next to toggle commands in the palette.
+    fn command_state(&self, command: Command) -> Option<bool> {
+        match command {
+            Command::WordWrap => Some(self.prefs.word_wrap),
+            Command::Whitespace => Some(self.prefs.show_whitespace),
+            Command::Highlight => Some(self.prefs.highlight),
+            Command::Split => Some(self.split_pair().is_some()),
+            _ => None,
+        }
+    }
+
+    /// Message for a menu-bar choice made with the mouse.
+    fn menu_message(&self, action: menu::Action) -> Message {
+        use menu::Action;
+        match action {
+            Action::Run(command) => Message::Run(command),
+            Action::Palette => Message::ShowPanel(Panel::Palette),
+            Action::Copy => Message::EditMenu(context_menu::Action::Copy),
+            Action::Cut => Message::EditMenu(context_menu::Action::Cut),
+            Action::Paste => Message::EditMenu(context_menu::Action::Paste),
+            Action::SelectAll => Message::EditMenu(context_menu::Action::SelectAll),
+            Action::FindNext(backwards) => Message::FindNext(backwards),
+            Action::NextTab => Message::NextTab,
+            Action::PreviousTab => Message::PreviousTab,
+            Action::MoveToWindow => Message::DetachTab(self.tabs[self.active_tab].id.clone(), None),
+            Action::CloseWindow => Message::CloseWindow,
         }
     }
 
@@ -1065,10 +1165,7 @@ impl App {
                 container(space::vertical())
                     .width(1)
                     .height(Length::Fill)
-                    .style(|_| container::Style {
-                        background: Some(theme::BORDER_COLOR.into()),
-                        ..Default::default()
-                    }),
+                    .style(theme::hairline_style),
                 self.editor_view(right, true)
             ]
             .height(Length::Fill)
@@ -1078,17 +1175,21 @@ impl App {
         };
         let mut body = column![header, editors];
         if let Some(message) = &self.status_notification {
-            body = body.push(
+            body = body.push(hairline()).push(
                 container(
                     row![
-                        text(message).size(12).width(Length::Fill),
+                        text("●").size(8).color(theme::TEXT_ACCENT),
+                        text(message)
+                            .size(theme::TEXT_SM)
+                            .color(theme::TEXT_BODY)
+                            .width(Length::Fill),
                         small_button("×", Message::DismissNotification)
                     ]
-                    .spacing(8)
+                    .spacing(10)
                     .align_y(Alignment::Center),
                 )
-                .padding([6, 12])
-                .style(theme::header_container_style),
+                .padding([5, 12])
+                .style(theme::chrome_container_style),
             );
         }
         let (line, col) = tab.cursor_position();
@@ -1097,43 +1198,65 @@ impl App {
             .line(line)
             .map(|l| l.text[..col.min(l.text.len())].chars().count())
             .unwrap_or(0);
-        let path = if self.session_blocked {
-            "Automatic draft recovery unavailable".into()
+        // Folder in faint text, file name brighter: the eye lands on what is open.
+        let location: Element<_> = if let Some((message, _)) = &self.toast {
+            row![
+                text("●").size(7).color(theme::TEXT_ACCENT),
+                text(message.clone())
+                    .size(theme::TEXT_SM)
+                    .color(theme::TEXT_BODY)
+            ]
+            .spacing(7)
+            .align_y(Alignment::Center)
+            .into()
+        } else if self.session_blocked {
+            text("Automatic draft recovery unavailable")
+                .size(theme::TEXT_SM)
+                .color(theme::DIRTY_DOT)
+                .into()
+        } else if let Some(path) = &tab.path {
+            let folder = path
+                .parent()
+                .map(|p| abbreviate_home(p) + "/")
+                .unwrap_or_default();
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            row![
+                text(folder).size(theme::TEXT_SM).color(theme::TEXT_FAINT),
+                text(name).size(theme::TEXT_SM).color(theme::TEXT_SECONDARY)
+            ]
+            .into()
         } else {
-            tab.path
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "Unsaved document".into())
+            text("Unsaved document")
+                .size(theme::TEXT_SM)
+                .color(theme::TEXT_FAINT)
+                .into()
         };
         let footer = container(
             row![
-                text(path)
-                    .size(12)
-                    .color(theme::TEXT_MUTED)
-                    .width(Length::Fill),
+                container(location).width(Length::Fill).clip(true),
                 small_button(&tab.language_label(), Message::Run(Command::Syntax)),
-                text(tab.encoding.label()).size(12).color(theme::TEXT_MUTED),
+                text(tab.encoding.label())
+                    .size(theme::TEXT_SM)
+                    .color(theme::TEXT_MUTED),
                 small_button(
-                    &format!("Ln {}, Col {}", line + 1, col + 1),
+                    &match tab.content.selection().map(|s| s.chars().count()) {
+                        Some(count) => {
+                            format!("Ln {}, Col {} · {count} selected", line + 1, col + 1)
+                        }
+                        None => format!("Ln {}, Col {}", line + 1, col + 1),
+                    },
                     Message::Run(Command::Goto)
                 ),
             ]
-            .spacing(9)
+            .spacing(6)
             .align_y(Alignment::Center),
         )
-        .padding([4, 12])
-        .style(theme::statusbar_container_style);
-        #[cfg(target_os = "macos")]
-        let content = column![
-            container(space::vertical())
-                .width(Length::Fill)
-                .height(32)
-                .style(theme::header_container_style),
-            body,
-            footer
-        ];
-        #[cfg(not(target_os = "macos"))]
-        let content = body.push(footer);
+        .padding([2, 8])
+        .style(theme::chrome_container_style);
+        let content = body.push(hairline()).push(footer);
         let base: Element<_> = container(content)
             .style(|_| container::Style {
                 background: Some(theme::BG_EDITOR.into()),
@@ -1149,40 +1272,63 @@ impl App {
                 .map(|t| t.title.as_str())
                 .unwrap_or("file");
             let dialog = column![
-                text(format!("Save changes to “{title}”?")).size(17),
-                text("This document has unsaved changes.")
-                    .size(13)
+                text(format!("Save changes to “{title}”?"))
+                    .size(theme::TEXT_TITLE)
+                    .color(theme::TEXT_PRIMARY),
+                text("Your changes will be lost if you don't save them.")
+                    .size(theme::TEXT_MD)
                     .color(theme::TEXT_MUTED),
                 row![
-                    button("Cancel")
-                        .style(theme::picker_item_style)
-                        .on_press(Message::CancelClose),
-                    button("Don't save")
+                    button(text("Don't save").size(theme::TEXT_MD))
+                        .padding([6, 12])
                         .style(theme::picker_item_style)
                         .on_press(Message::DiscardClose),
-                    button("Save")
+                    space::horizontal(),
+                    button(text("Cancel").size(theme::TEXT_MD))
+                        .padding([6, 12])
+                        .style(theme::picker_item_style)
+                        .on_press(Message::CancelClose),
+                    button(text("Save").size(theme::TEXT_MD))
+                        .padding([6, 16])
                         .style(theme::primary_button_style)
                         .on_press(Message::SaveClose)
                 ]
-                .spacing(10)
+                .spacing(8)
+                .padding(iced::Padding::ZERO.top(8))
             ]
-            .spacing(18);
+            .width(400)
+            .spacing(8);
             return stack![
                 base,
                 iced::widget::opaque(
                     container(
                         container(dialog)
-                            .padding(24)
+                            .padding([20, 22])
                             .style(theme::picker_container_style)
                     )
                     .center(Length::Fill)
                     .style(|_| container::Style {
-                        background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.35).into()),
+                        background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.3).into()),
                         ..Default::default()
                     })
                 )
             ]
             .into();
+        }
+        // Find stays docked and non-modal: the document remains clickable and editable.
+        if self.context.is_none() && matches!(self.panel, Panel::Find | Panel::Replace) {
+            let bar = responsive(move |size| {
+                let width = 520.0_f32.min(size.width - 24.0);
+                pin(iced::widget::opaque(
+                    container(self.search_bar()).width(width),
+                ))
+                .position(iced::Point::new(
+                    size.width - width - 20.0,
+                    tab_bar::HEIGHT + 8.0,
+                ))
+                .into()
+            });
+            return stack![base, bar].into();
         }
         if self.context.is_some() || self.panel != Panel::None {
             let backdrop = mouse_area(space::horizontal().height(Length::Fill))
@@ -1217,7 +1363,7 @@ impl App {
                         };
                         (
                             container(content).width(width).into(),
-                            iced::Point::new((size.width - width) / 2.0, 58.0),
+                            iced::Point::new((size.width - width) / 2.0, tab_bar::HEIGHT + 10.0),
                         )
                     };
                 pin(iced::widget::opaque(content)).position(position).into()
@@ -1235,11 +1381,11 @@ impl App {
         let mut editor = text_editor(&tab.content)
             .id(self.editor_id(&tab.id))
             .font(typography::MONO)
-            .size(self.font_size)
+            .size(self.prefs.font_size)
             .line_height(iced::widget::text::LineHeight::Absolute(
-                (self.font_size * 1.4).into(),
+                (self.prefs.font_size * 1.4).into(),
             ))
-            .wrapping(if self.word_wrap_enabled {
+            .wrapping(if self.prefs.word_wrap {
                 iced::widget::text::Wrapping::WordOrGlyph
             } else {
                 iced::widget::text::Wrapping::None
@@ -1247,12 +1393,12 @@ impl App {
             .style(theme::editor_style)
             .highlight_with::<highlighter::NordHighlighter>(
                 highlighter::Settings {
-                    token: if self.highlight_enabled {
+                    token: if self.prefs.highlight {
                         tab.syntax_token()
                     } else {
                         "txt".into()
                     },
-                    show_whitespace: self.show_whitespace,
+                    show_whitespace: self.prefs.show_whitespace,
                     search: if index == self.active_tab
                         && matches!(self.panel, Panel::Find | Panel::Replace)
                     {
@@ -1309,7 +1455,7 @@ impl App {
                 bottom: 10.0,
                 left: 16.0,
             });
-        if !self.word_wrap_enabled {
+        if !self.prefs.word_wrap {
             editor = editor.width(iced::Pixels(editor_width));
         }
 
@@ -1319,7 +1465,7 @@ impl App {
             scrollbar::Scrollbar::new(tab.line_count(), tab.scroll_line, move |line| {
                 Message::ScrollAt(scroll_id.clone(), line)
             })
-            .metrics(self.font_size * 1.4, tab.id.clone(), move |height| {
+            .metrics(self.prefs.font_size * 1.4, tab.id.clone(), move |height| {
                 Message::ViewportAt(viewport_id.clone(), height)
             }),
         )
@@ -1330,27 +1476,37 @@ impl App {
             offset: tab.scroll_offset,
             total: tab.line_count(),
             cursor: tab.cursor_position().0,
-            font_size: self.font_size,
+            font_size: self.prefs.font_size,
         })
         .width(self.gutter_width(index))
         .height(Length::Fill);
         let mut pane = column![].height(Length::Fill).width(Length::FillPortion(1));
         if split {
-            pane = pane.push(
-                container(
-                    row![
-                        text(tab.title.clone()).size(12).width(Length::Fill),
-                        text(if index == self.active_tab { "●" } else { "" })
-                            .size(10)
-                            .color(theme::TEXT_ACCENT)
-                    ]
-                    .align_y(Alignment::Center),
+            let focused = index == self.active_tab;
+            pane = pane
+                .push(
+                    container(
+                        row![
+                            text(if focused { "●" } else { "" })
+                                .size(8)
+                                .color(theme::TEXT_ACCENT),
+                            text(tab.title.clone())
+                                .size(theme::TEXT_SM)
+                                .color(if focused {
+                                    theme::TEXT_PRIMARY
+                                } else {
+                                    theme::TEXT_MUTED
+                                })
+                                .width(Length::Fill),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([5, 14]),
                 )
-                .padding([7, 14])
-                .style(theme::header_container_style),
-            );
+                .push(hairline());
         }
-        if self.word_wrap_enabled {
+        if self.prefs.word_wrap {
             pane = pane.push(row![editor].height(Length::Fill));
         } else {
             let scroll_tab_id = tab.id.clone();
@@ -1369,7 +1525,17 @@ impl App {
                 drag_edge::drag_edge(horizontal_editor, move |pointer, size| {
                     Message::DragOutside(drag_tab_id.clone(), pointer, size)
                 });
-            pane = pane.push(row![gutter, horizontal_editor, scrollbar].height(Length::Fill));
+            let band = canvas(gutter::LineBand {
+                top: tab.scroll_line,
+                offset: tab.scroll_offset,
+                cursor: tab.cursor_position().0,
+                font_size: self.prefs.font_size,
+            })
+            .width(Length::Fill)
+            .height(Length::Fill);
+            pane = pane.push(
+                row![gutter, stack![band, horizontal_editor], scrollbar].height(Length::Fill),
+            );
         }
         mouse_area(pane)
             .on_right_press(Message::OpenEditorContext(tab.id.clone()))
@@ -1377,64 +1543,100 @@ impl App {
     }
 
     fn search_bar(&self) -> Element<'_, Message> {
-        let count = if self.search.matches.is_empty() {
-            "No matches".into()
+        let replacing = self.panel == Panel::Replace;
+        let (count, count_color) = if self.search.query.is_empty() {
+            (String::new(), theme::TEXT_MUTED)
+        } else if self.search.matches.is_empty() {
+            ("No results".into(), theme::DIRTY_DOT)
         } else {
-            format!(
-                "{} / {}",
-                self.search.current.map(|i| i + 1).unwrap_or(0),
-                self.search.matches.len()
+            (
+                format!(
+                    "{} of {}",
+                    self.search.current.map(|i| i + 1).unwrap_or(0),
+                    self.search.matches.len()
+                ),
+                theme::TEXT_MUTED,
             )
         };
-        let mut bar = column![
-            row![
-                text_input("Find…", &self.search.query)
-                    .id(self.panel_id())
-                    .on_input(Message::SearchQuery)
-                    .on_submit(Message::FindNext(false))
-                    .style(theme::text_input_style)
-                    .width(Length::Fill),
-                small_button(
-                    if self.search.case_sensitive {
-                        "Aa ✓"
-                    } else {
-                        "Aa"
-                    },
-                    Message::ToggleCase
-                ),
-                small_button(
-                    if self.search.regex { ".* ✓" } else { ".*" },
-                    Message::ToggleRegex
-                ),
-                text(count).size(12).color(theme::TEXT_MUTED),
+        let find = row![
+            text_input("Find", &self.search.query)
+                .id(self.panel_id())
+                .padding([5, 9])
+                .size(theme::TEXT_MD)
+                .on_input(Message::SearchQuery)
+                .on_submit(Message::FindNext(false))
+                .style(theme::text_input_style)
+                .width(Length::Fill),
+            tip(
+                toggle_button("Aa", self.search.case_sensitive, Message::ToggleCase),
+                "Match case"
+            ),
+            tip(
+                toggle_button(".*", self.search.regex, Message::ToggleRegex),
+                "Use regular expression"
+            ),
+            text(count)
+                .size(theme::TEXT_SM)
+                .color(count_color)
+                .width(72)
+                .align_x(iced::alignment::Horizontal::Center),
+            tip(
                 small_button("↑", Message::FindNext(true)),
+                "Previous match  ⌘⇧G"
+            ),
+            tip(
                 small_button("↓", Message::FindNext(false)),
-                small_button("×", Message::ClosePanel),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center)
+                "Next match  ⌘G"
+            ),
+            tip(small_button("×", Message::ClosePanel), "Close  esc"),
         ]
-        .spacing(6);
-        if self.panel == Panel::Replace {
-            bar = bar.push(
+        .spacing(2)
+        .align_y(Alignment::Center);
+        let mut fields = column![find].spacing(6);
+        if replacing {
+            fields = fields.push(
                 row![
-                    text_input("Replace with…", &self.search.replacement)
+                    text_input("Replace", &self.search.replacement)
                         .id(self.replacement_id())
+                        .padding([5, 9])
+                        .size(theme::TEXT_MD)
                         .on_input(Message::Replacement)
                         .on_submit(Message::ReplaceOne)
-                        .style(theme::text_input_style),
-                    small_button("Replace", Message::ReplaceOne),
-                    small_button("Replace all", Message::ReplaceAll)
+                        .style(theme::text_input_style)
+                        .width(Length::Fill),
+                    tip(small_button("Replace", Message::ReplaceOne), "Replace  ↵"),
+                    small_button("All", Message::ReplaceAll),
                 ]
-                .spacing(8)
+                .spacing(2)
                 .align_y(Alignment::Center),
             );
         }
         if let Some(error) = &self.search.error {
-            bar = bar.push(text(error).size(11).color(theme::DIRTY_DOT));
+            fields = fields.push(text(error).size(theme::TEXT_XS).color(theme::DIRTY_DOT));
         }
-        container(bar)
-            .padding([8, 12])
+        let expand = tip(
+            button(
+                text(if replacing { "⌄" } else { "›" })
+                    .size(theme::TEXT_MD)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .width(Length::Fill),
+            )
+            .width(20)
+            .padding([3, 0])
+            .style(theme::icon_button_style)
+            .on_press(Message::ShowPanel(if replacing {
+                Panel::Find
+            } else {
+                Panel::Replace
+            })),
+            if replacing {
+                "Hide replace"
+            } else {
+                "Show replace  ⌘⌥F"
+            },
+        );
+        container(row![expand, fields].spacing(4).align_y(Alignment::Start))
+            .padding(6)
             .style(theme::picker_container_style)
             .into()
     }
@@ -1450,7 +1652,8 @@ impl App {
                 .id(self.panel_id())
                 .on_input(Message::PanelQuery)
                 .on_submit(Message::PanelSubmit)
-                .padding(10)
+                .padding([8, 10])
+                .size(theme::TEXT_MD)
                 .style(theme::text_input_style)
         ]
         .spacing(8);
@@ -1463,28 +1666,48 @@ impl App {
                 .skip(self.panel_first)
                 .take(PICKER_ROWS)
             {
-                let (label, hint, message) = if self.panel == Panel::Palette {
+                let (label, hint, message, state) = if self.panel == Panel::Palette {
                     let (command, label, hint) = COMMANDS[index];
-                    (label, hint, Message::Run(command))
+                    (
+                        label,
+                        hint,
+                        Message::Run(command),
+                        self.command_state(command),
+                    )
                 } else {
                     let (token, name) = highlighter::major_languages()[index];
-                    (name, token, Message::SelectLanguage(token.into()))
+                    let current = token == self.tabs[self.active_tab].syntax_token();
+                    (
+                        name,
+                        token,
+                        Message::SelectLanguage(token.into()),
+                        current.then_some(true),
+                    )
                 };
                 let selected = position == self.panel_index;
+                let state = match state {
+                    Some(true) => text("on").size(theme::TEXT_XS).color(theme::TEXT_ACCENT),
+                    Some(false) => text("off").size(theme::TEXT_XS).color(theme::TEXT_FAINT),
+                    None => text(""),
+                };
                 items = items.push(
                     button(
                         row![
-                            text(label).size(13).width(Length::Fill),
-                            text(hint).size(11).color(theme::TEXT_MUTED)
+                            text(label).size(theme::TEXT_MD).width(Length::Fill),
+                            state,
+                            text(hint)
+                                .size(theme::TEXT_XS)
+                                .color(theme::TEXT_MUTED)
+                                .width(48)
+                                .align_x(iced::alignment::Horizontal::Right)
                         ]
+                        .spacing(10)
                         .align_y(Alignment::Center),
                     )
-                    .style(move |theme, status| {
-                        if selected {
-                            theme::tab_button_style(true)(theme, status)
-                        } else {
-                            theme::picker_item_style(theme, status)
-                        }
+                    .style(if selected {
+                        theme::selected_item_style
+                    } else {
+                        theme::picker_item_style
                     })
                     .padding([8, 10])
                     .width(Length::Fill)
@@ -1492,29 +1715,44 @@ impl App {
                 );
             }
             if indices.is_empty() {
-                items = items.push(text("No results").size(13).color(theme::TEXT_MUTED));
+                items = items.push(
+                    container(
+                        text("No results")
+                            .size(theme::TEXT_MD)
+                            .color(theme::TEXT_MUTED),
+                    )
+                    .padding([8, 10]),
+                );
             }
             content = content
                 .push(mouse_area(items).on_scroll(Message::PanelScroll))
                 .push(
-                    text("↑ ↓ select     ↵ run     esc close")
-                        .size(11)
-                        .color(theme::TEXT_MUTED),
+                    container(
+                        text("↑↓ select    ↵ run    esc close")
+                            .size(theme::TEXT_XS)
+                            .color(theme::TEXT_FAINT),
+                    )
+                    .padding([0, 10]),
                 );
         } else {
             content = content.push(
-                text("↵ go to position     esc cancel")
-                    .size(11)
-                    .color(theme::TEXT_MUTED),
+                container(
+                    text("↵ go to position    esc cancel")
+                        .size(theme::TEXT_XS)
+                        .color(theme::TEXT_FAINT),
+                )
+                .padding([0, 10]),
             );
         }
         container(content)
-            .padding(12)
+            .padding(8)
             .width(540)
             .style(theme::picker_container_style)
             .into()
     }
 }
+
+const TOAST_DURATION: std::time::Duration = std::time::Duration::from_millis(2200);
 
 /// Rows the command and language pickers show at once.
 const PICKER_ROWS: usize = 11;
@@ -1522,11 +1760,54 @@ const PICKER_ROWS: usize = 11;
 const PICKER_ROW_HEIGHT: f32 = 34.0;
 
 fn small_button(label: &str, message: Message) -> Element<'static, Message> {
-    button(text(label.to_owned()).size(12))
-        .padding([4, 7])
+    button(text(label.to_owned()).size(theme::TEXT_SM))
+        .padding([3, 8])
         .style(theme::icon_button_style)
         .on_press(message)
         .into()
+}
+
+fn toggle_button(label: &str, on: bool, message: Message) -> Element<'static, Message> {
+    button(text(label.to_owned()).size(theme::TEXT_SM))
+        .padding([3, 8])
+        .style(theme::toggle_button_style(on))
+        .on_press(message)
+        .into()
+}
+
+/// Hover label for an icon-only control.
+fn tip<'a>(content: impl Into<Element<'a, Message>>, label: &str) -> Element<'a, Message> {
+    iced::widget::tooltip(
+        content,
+        container(
+            text(label.to_owned())
+                .size(theme::TEXT_XS)
+                .color(theme::TEXT_BODY),
+        )
+        .padding([4, 8])
+        .style(theme::tooltip_style),
+        iced::widget::tooltip::Position::Bottom,
+    )
+    .gap(6)
+    .delay(std::time::Duration::from_millis(450))
+    .into()
+}
+
+fn hairline() -> Element<'static, Message> {
+    container(space::horizontal())
+        .width(Length::Fill)
+        .height(1)
+        .style(theme::hairline_style)
+        .into()
+}
+
+/// `/Users/me/dev` → `~/dev`.
+fn abbreviate_home(path: &std::path::Path) -> String {
+    match dirs::home_dir().and_then(|home| path.strip_prefix(home).ok().map(PathBuf::from)) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
 }
 
 fn save_as_dialog(id: String) -> Task<Message> {
@@ -1547,6 +1828,8 @@ fn shortcut(key: &Key, m: keyboard::Modifiers, panel: Panel) -> Option<Message> 
     if *key == Key::Named(Named::Escape) {
         return Some(Message::ClosePanel);
     }
+    // Pickers own the keyboard; the find bar leaves editing shortcuts active.
+    let editing = !matches!(panel, Panel::Palette | Panel::Goto | Panel::Language);
     if matches!(panel, Panel::Palette | Panel::Language) {
         if *key == Key::Named(Named::ArrowUp) {
             return Some(Message::PanelStep(true));
@@ -1567,6 +1850,7 @@ fn shortcut(key: &Key, m: keyboard::Modifiers, panel: Panel) -> Option<Message> 
             "o" => Message::Run(Command::Open),
             "n" | "t" => Message::Run(Command::New),
             "w" if m.alt() => Message::Run(Command::WordWrap),
+            "w" if m.shift() => Message::CloseWindow,
             "w" => Message::Run(Command::Close),
             "q" => Message::Quit,
             "\\" => Message::ToggleSplit,
@@ -1580,17 +1864,13 @@ fn shortcut(key: &Key, m: keyboard::Modifiers, panel: Panel) -> Option<Message> 
             "0" => Message::Run(Command::ZoomReset),
             "]" if m.shift() => Message::NextTab,
             "[" if m.shift() => Message::PreviousTab,
-            "z" if panel == Panel::None => Message::Run(if m.shift() {
+            "z" if editing => Message::Run(if m.shift() {
                 Command::Redo
             } else {
                 Command::Undo
             }),
-            "d" if m.shift() && panel == Panel::None => {
-                Message::Run(Command::Line(LineCommand::Duplicate))
-            }
-            "k" if m.shift() && panel == Panel::None => {
-                Message::Run(Command::Line(LineCommand::Delete))
-            }
+            "d" if m.shift() && editing => Message::Run(Command::Line(LineCommand::Duplicate)),
+            "k" if m.shift() && editing => Message::Run(Command::Line(LineCommand::Delete)),
             "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => {
                 Message::SelectTab(c.parse::<usize>().ok()? - 1)
             }
@@ -1607,7 +1887,7 @@ fn shortcut(key: &Key, m: keyboard::Modifiers, panel: Panel) -> Option<Message> 
     if m.control() && key.as_ref() == Key::Character("g") {
         return Some(Message::Run(Command::Goto));
     }
-    if panel == Panel::None && m.alt() {
+    if editing && m.alt() {
         if *key == Key::Named(Named::ArrowUp) {
             return Some(Message::Run(Command::Line(LineCommand::MoveUp)));
         }

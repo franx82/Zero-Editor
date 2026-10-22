@@ -1,6 +1,6 @@
 //! One session writer owns the documents across every native window.
 use crate::{App, Message, Tab, session};
-use iced::{Element, Event, Size, Subscription, Task, event, mouse, window};
+use iced::{Element, Event, Point, Rectangle, Size, Subscription, Task, event, mouse, window};
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -15,11 +15,15 @@ pub enum EventMessage {
     Event(Event, event::Status, window::Id),
     Tick,
     Saved(u64, Result<(), String>),
+    Placed(window::Id, Option<Point>, Size),
 }
 
 pub struct Desktop {
     windows: BTreeMap<window::Id, App>,
+    /// Screen frames (logical points) for routing tabs dropped on another window.
+    frames: BTreeMap<window::Id, Rectangle>,
     parked: Vec<Tab>,
+    prefs: crate::prefs::Prefs,
     focused: window::Id,
     revision: u64,
     persisted: u64,
@@ -54,7 +58,9 @@ impl Desktop {
             None
         };
         let (tabs, active) = restored.unwrap_or_else(|| (vec![Tab::new_empty(0)], 0));
+        let prefs = crate::prefs::Prefs::load();
         let mut app = App::from_tabs(tabs, active, notification);
+        app.prefs = prefs;
         for path in std::env::args_os().skip(1) {
             app.open_path(path.into());
         }
@@ -68,7 +74,9 @@ impl Desktop {
         (
             Self {
                 windows: BTreeMap::from([(id, app)]),
+                frames: BTreeMap::new(),
                 parked: Vec::new(),
+                prefs,
                 focused: id,
                 revision,
                 persisted: 0,
@@ -133,6 +141,7 @@ impl Desktop {
     }
     fn finish_close(&mut self, id: window::Id) -> Task<EventMessage> {
         self.closing = None;
+        self.frames.remove(&id);
         if let Some(app) = self.windows.remove(&id) {
             self.parked.extend(
                 app.tabs
@@ -186,36 +195,95 @@ impl Desktop {
         self.quitting = true;
         self.persist()
     }
-    fn detach(&mut self, source: window::Id, tab_id: String) -> Task<EventMessage> {
+    /// Moves a tab out of `source`: into the window under `drop` if there is
+    /// one, otherwise into a new window opened at the drop point.
+    fn detach(
+        &mut self,
+        source: window::Id,
+        tab_id: String,
+        drop: Option<Point>,
+    ) -> Task<EventMessage> {
+        let screen = drop.and_then(|p| {
+            let frame = self.frames.get(&source)?;
+            Some(Point::new(frame.x + p.x, frame.y + p.y))
+        });
+        let target = screen.and_then(|point| {
+            self.frames
+                .iter()
+                .find(|(id, frame)| {
+                    **id != source && self.windows.contains_key(id) && frame.contains(point)
+                })
+                .map(|(id, frame)| (*id, Point::new(point.x - frame.x, point.y - frame.y)))
+        });
         let Some(app) = self.windows.get_mut(&source) else {
             return Task::none();
         };
         let Some(index) = app.tabs.iter().position(|t| t.id == tab_id) else {
             return Task::none();
         };
+        // A window's only tab has nowhere new to go.
+        if target.is_none() && app.tabs.len() == 1 {
+            return Task::none();
+        }
         let active = app.tabs[app.active_tab].id.clone();
         let tab = app.tabs.remove(index);
-        if app.tabs.is_empty() {
-            let tab = app.fresh_tab();
-            app.tabs.push(tab);
+        let emptied = app.tabs.is_empty();
+        if !emptied {
+            app.active_tab = app
+                .tabs
+                .iter()
+                .position(|t| t.id == active)
+                .unwrap_or_else(|| index.min(app.tabs.len() - 1));
+            app.normalize_split();
+            app.context = None;
+            app.panel = crate::Panel::None;
+            app.refresh_search();
         }
-        app.active_tab = app
-            .tabs
-            .iter()
-            .position(|t| t.id == active)
-            .unwrap_or_else(|| index.min(app.tabs.len() - 1));
-        app.normalize_split();
-        app.context = None;
-        app.panel = crate::Panel::None;
-        app.refresh_search();
-        let mut new = App::from_tabs(vec![tab], 0, None);
-        new.font_size = app.font_size;
-        new.highlight_enabled = app.highlight_enabled;
-        new.show_whitespace = app.show_whitespace;
-        new.session_blocked = self.blocked;
-        let (id, open) = window::open(settings());
-        self.windows.insert(id, new);
         self.changed();
+
+        if let Some((target, local)) = target {
+            let close = if emptied {
+                self.windows.remove(&source);
+                self.frames.remove(&source);
+                window::close(source)
+            } else {
+                Task::none()
+            };
+            let Some(dest) = self.windows.get_mut(&target) else {
+                return close;
+            };
+            let at = if local.y <= crate::tab_bar::HEIGHT {
+                crate::tab_bar::drop_index(&dest.tabs, local.x)
+            } else {
+                dest.tabs.len()
+            };
+            dest.tabs.insert(at, tab);
+            dest.active_tab = at;
+            if dest.split_anchor.is_some() {
+                dest.split_anchor = dest.adjacent_split_anchor();
+                dest.normalize_split();
+            }
+            dest.refresh_search();
+            self.focused = target;
+            let focus = dest
+                .focus_editor()
+                .map(move |m| EventMessage::Window(target, m));
+            return Task::batch([close, window::gain_focus(target), focus]);
+        }
+
+        let mut new = App::from_tabs(vec![tab], 0, None);
+        new.prefs = self.prefs;
+        new.session_blocked = self.blocked;
+        let mut settings = settings();
+        if let Some(point) = screen {
+            // Open with the tab's title under the pointer.
+            settings.position = window::Position::Specific(Point::new(
+                point.x - 140.0,
+                point.y - crate::tab_bar::HEIGHT / 2.0,
+            ));
+        }
+        let (id, open) = window::open(settings);
+        self.windows.insert(id, new);
         open.map(EventMessage::Opened)
     }
     fn dispatch(&mut self, id: window::Id, message: Message) -> Task<EventMessage> {
@@ -263,7 +331,9 @@ impl Desktop {
         }
         match message {
             Message::Quit => return self.quit(),
-            Message::DetachTab(tab_id) => return self.detach(id, tab_id),
+            Message::DetachTab(tab_id, drop) => return self.detach(id, tab_id, drop),
+            Message::DragWindow => return window::drag(id),
+            Message::CloseWindow => return self.request_close(id),
             _ => {}
         }
         let Some(app) = self.windows.get_mut(&id) else {
@@ -271,8 +341,19 @@ impl Desktop {
         };
         let before = app.revision;
         let task = app.update(message);
-        if app.revision != before {
+        let (edited, prefs) = (app.revision != before, app.prefs);
+        if edited {
             self.changed();
+        }
+        // View preferences are global: a change in one window applies to all.
+        if prefs != self.prefs {
+            self.prefs = prefs;
+            self.prefs.save();
+            #[cfg(target_os = "macos")]
+            crate::macos::set_menu_checks(&self.prefs);
+            for other in self.windows.values_mut() {
+                other.prefs = self.prefs;
+            }
         }
         task.map(move |m| EventMessage::Window(id, m))
     }
@@ -282,20 +363,54 @@ impl Desktop {
             EventMessage::Opened(id) => {
                 self.focused = id;
                 #[cfg(target_os = "macos")]
-                crate::macos::style_titlebar();
+                {
+                    crate::macos::style_titlebar();
+                    crate::macos::set_menu_checks(&self.prefs);
+                    crate::macos::install_menu();
+                }
                 self.windows
                     .get(&id)
                     .map(|app| {
                         Task::batch([
                             window::gain_focus(id),
                             app.focus_editor().map(move |m| EventMessage::Window(id, m)),
+                            window::size(id).then(move |size| {
+                                window::position(id)
+                                    .map(move |position| EventMessage::Placed(id, position, size))
+                            }),
                         ])
                     })
                     .unwrap_or_else(Task::none)
             }
+            EventMessage::Placed(id, position, size) => {
+                if let Some(origin) = position
+                    && self.windows.contains_key(&id)
+                {
+                    self.frames.insert(id, Rectangle::new(origin, size));
+                }
+                Task::none()
+            }
             EventMessage::Close(id) => self.request_close(id),
             EventMessage::Event(event, status, id) => match event {
+                Event::Window(window::Event::Opened {
+                    position: Some(origin),
+                    size,
+                }) => {
+                    self.frames.insert(id, Rectangle::new(origin, size));
+                    Task::none()
+                }
+                Event::Window(window::Event::Moved(position)) => {
+                    if let Some(frame) = self.frames.get_mut(&id) {
+                        frame.x = position.x;
+                        frame.y = position.y;
+                    }
+                    Task::none()
+                }
                 Event::Window(window::Event::Resized(size)) => {
+                    if let Some(frame) = self.frames.get_mut(&id) {
+                        frame.width = size.width;
+                        frame.height = size.height;
+                    }
                     if let Some(app) = self.windows.get_mut(&id) {
                         app.window_width = size.width;
                         app.sync_horizontal_cursor()
@@ -341,12 +456,24 @@ impl Desktop {
                 _ => Task::none(),
             },
             EventMessage::Tick => {
+                for app in self.windows.values_mut() {
+                    app.expire_toast();
+                }
                 #[cfg(target_os = "macos")]
                 {
                     if crate::macos::take_quit_request() {
                         return self.quit();
                     }
                     let mut tasks = Vec::new();
+                    for action in crate::macos::take_menu_actions() {
+                        let id = self.focused;
+                        if let Some(app) = self.windows.get(&id)
+                            && app.close_confirmation.is_none()
+                        {
+                            let message = app.menu_message(action);
+                            tasks.push(self.dispatch(id, message));
+                        }
+                    }
                     while let Some(path) = crate::macos::try_recv() {
                         tasks.push(self.dispatch(self.focused, Message::FileDropped(path)));
                     }
@@ -410,7 +537,7 @@ fn settings() -> window::Settings {
         exit_on_close_request: false,
         #[cfg(target_os = "macos")]
         platform_specific: window::settings::PlatformSpecific {
-            title_hidden: false,
+            title_hidden: true,
             titlebar_transparent: true,
             fullsize_content_view: true,
         },
@@ -429,7 +556,9 @@ mod tests {
         ));
         Desktop {
             windows: BTreeMap::from([(id, App::from_tabs(vec![tab], 0, None))]),
+            frames: BTreeMap::from([(id, Rectangle::new(Point::ORIGIN, Size::new(800.0, 600.0)))]),
             parked: vec![],
+            prefs: crate::prefs::Prefs::default(),
             focused: id,
             revision: 1,
             persisted: 0,
@@ -446,7 +575,12 @@ mod tests {
         let mut d = desktop();
         let source = d.focused;
         let id = d.windows[&source].tabs[0].id.clone();
-        let _ = d.detach(source, id.clone());
+        d.windows
+            .get_mut(&source)
+            .unwrap()
+            .tabs
+            .push(Tab::new_empty(1));
+        let _ = d.detach(source, id.clone(), None);
         assert_eq!(d.windows.len(), 2);
         let tab = d
             .windows
@@ -463,6 +597,36 @@ mod tests {
             .unwrap();
         app.tabs[0].undo();
         assert_eq!(app.tabs[0].content.text(), "");
+    }
+    #[test]
+    fn detaching_a_lone_tab_without_a_target_keeps_its_window() {
+        let mut d = desktop();
+        let source = d.focused;
+        let id = d.windows[&source].tabs[0].id.clone();
+        let _ = d.detach(source, id, Some(Point::new(100.0, 300.0)));
+        assert_eq!(d.windows.len(), 1);
+        assert_eq!(d.windows[&source].tabs.len(), 1);
+    }
+    #[test]
+    fn dropping_a_lone_tab_on_another_window_merges_and_closes_the_source() {
+        let mut d = desktop();
+        let target = d.focused;
+        let source = window::Id::unique();
+        let tab = Tab::new_empty(7);
+        let id = tab.id.clone();
+        d.windows.insert(source, App::from_tabs(vec![tab], 0, None));
+        d.frames.insert(
+            source,
+            Rectangle::new(Point::new(900.0, 0.0), Size::new(400.0, 300.0)),
+        );
+        // Released over the target's tab bar, left of its first tab's centre.
+        let _ = d.detach(source, id.clone(), Some(Point::new(-880.0, 10.0)));
+        assert!(!d.windows.contains_key(&source));
+        assert!(!d.frames.contains_key(&source));
+        let app = &d.windows[&target];
+        assert_eq!(app.tabs[0].id, id);
+        assert_eq!(app.active_tab, 0);
+        assert_eq!(d.focused, target);
     }
     #[test]
     fn write_failure_cancels_close_and_quit_for_all_windows() {
@@ -487,7 +651,12 @@ mod tests {
         let mut d = desktop();
         let source = d.focused;
         let id = d.windows[&source].tabs[0].id.clone();
-        let _ = d.detach(source, id.clone());
+        d.windows
+            .get_mut(&source)
+            .unwrap()
+            .tabs
+            .push(Tab::new_empty(1));
+        let _ = d.detach(source, id.clone(), None);
         let _ = d.finish_close(source);
         let root = std::env::temp_dir().join(crate::storage::unique_id());
         let drafts = root.join("drafts");
@@ -509,7 +678,12 @@ mod tests {
         std::fs::write(&path, "disk").unwrap();
         d.windows.get_mut(&source).unwrap().tabs[0].path = Some(path.clone());
         let id = d.windows[&source].tabs[0].id.clone();
-        let _ = d.detach(source, id);
+        d.windows
+            .get_mut(&source)
+            .unwrap()
+            .tabs
+            .push(Tab::new_empty(1));
+        let _ = d.detach(source, id, None);
         let _ = d.dispatch(source, Message::FileDropped(path.clone()));
         let count = d
             .windows
