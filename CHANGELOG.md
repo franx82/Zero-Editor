@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1 — 2026-10-23
+
+- New app icon: a slashed zero in Nord frost bands on a Polar Night squircle, drawn in code by `scripts/generate_icon.py`.
+
 ## 0.4.0 — 2026-10-22
 
 - Flat Nord redesign: the tab bar doubles as the macOS titlebar, with quieter chrome and clearer text levels.
