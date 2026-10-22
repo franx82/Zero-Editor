@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 — 2026-10-22
+
+- Flat Nord redesign: the tab bar doubles as the macOS titlebar, with quieter chrome and clearer text levels.
+- Tabs follow the pointer while dragged; drop one on another window to move it there.
+- Native menu bar (File, Edit, View, Go, Window) with every command, its shortcut and Open Recent.
+- The find bar no longer blocks the editor, and has tooltips and an inline replace toggle.
+- Confirmations appear briefly in the status bar; the status bar also shows the selection length.
+- Text size, word wrap, whitespace markers and highlighting apply to every window and persist across launches.
+- The command palette shows whether toggles are on or off.
+
 ## 0.3.0 — 2026-10-21
 
 - Switch the editor font to Meslo LG for rounder, less condensed glyphs.

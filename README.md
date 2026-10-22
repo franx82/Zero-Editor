@@ -6,7 +6,7 @@ Inspired by Zed's simplicity and Vim's editing workflow. No accounts, integrated
 
 ## Download
 
-Download **Zero-Editor-v0.3.0-macos-arm64.zip** from the [latest release](https://github.com/franx82/Zero-Editor/releases/latest),
+Download **Zero-Editor-v0.4.0-macos-arm64.zip** from the [latest release](https://github.com/franx82/Zero-Editor/releases/latest),
 extract it and move **Zero Editor.app** to Applications. This package targets **Apple Silicon**, with macOS 12 as its declared minimum.
 Only the current development Mac has been checked; older macOS versions have not been verified.
 
